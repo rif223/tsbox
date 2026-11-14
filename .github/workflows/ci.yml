@@ -21,7 +21,7 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - uses: denoland/setup-deno@v2
@@ -49,7 +49,7 @@ jobs:
       RUNSC_SHA256: fed7f0497aef8e3b9d91785d825ce71b063cb3ff4a102f25eb41c1b52f45eaae
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - uses: denoland/setup-deno@v2
@@ -88,7 +88,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - uses: denoland/setup-deno@v2
