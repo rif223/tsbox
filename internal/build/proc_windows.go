@@ -8,7 +8,7 @@ import (
 
 // Windows: deno bundle starts esbuild as a service (--service --ping). When builds run in parallel, these
 // processes occasionally inherit pipe handles of other builds, then wait for each other's stdin and live
-// forever; cmd.Wait hung because of this in the full test run (phase4.md). A job object with
+// forever; cmd.Wait hung because of this in the full test run (docs/NOTES.md, platform pitfalls). A job object with
 // KILL_ON_JOB_CLOSE ends all descendants of deno after every build.
 
 var (

@@ -1,12 +1,12 @@
-# tsbox – Architecture (as of 2026-11-07, after phase 6)
+# tsbox – Architecture
 
 tsbox runs TypeScript code on Deno in isolation, similar to how Docker runs containers: with one command, hard
 limits and controlled capabilities (SDKs). It can be used as a CLI and as a Go library.
 
 **Status marks:** ✅ implemented and tested · 🟡 with limitations · ⬜ planned
 
-Measurements and evidence: [spike-2026-11.md](spike-2026-11.md) (phase 0), [phase1.md](phase1.md),
-[phase2.md](phase2.md), [phase3.md](phase3.md), [phase4.md](phase4.md), [phase5.md](phase5.md).
+Measurements, design decisions and known limits: [NOTES.md](NOTES.md); the gVisor experiments the design rests
+on: [gvisor-spike.md](gvisor-spike.md); Firecracker compared with gVisor: [firecracker-test.md](firecracker-test.md).
 
 ---
 
@@ -317,15 +317,7 @@ scripts/                               build-rootfs.sh (embedded for setup, PROF
 docs/
 ```
 
-## 10. Phases
+## 10. Planned
 
-| Phase | Content | Status |
-|---|---|---|
-| 0 | Spike: stdio channel, UID per script, RLIMIT_NPROC, OOM, build without network, script end, stdout | ✅ |
-| 1 | Core: protocol, init, drivers gvisor/dev, engine, `tsbox run`, attack suite | ✅ |
-| 2 | SDK system, kv/log/http/echo, external providers, `sdk` commands, `types`, `check`, build sandbox | ✅ |
-| 3 | `tsboxd` with a local API, `ps/logs/stats/stop/rm/inspect/events`, persistent state, log files, `tsbox.json` (up/down), profile hash, `doctor`, `setup` | ✅ |
-| 4 | Hardening: canary test I2 in the box memory, named profiles, path SDKs in directories with their own deno.json, load test with several boxes, fuzzing of all parsers (21 targets), gVisor E2E in the CI (🟡 not yet run on GitHub), `oom_score_adj`, Windows hang in the full test run fixed | ✅ |
-| 5 | Benchmarks (RAM, CPU, start time per box and script), build cache by input hash, `--platform=kvm` (not measurable locally without KVM, measured in the CI job) | ✅ |
-| 6 | Firecracker driver (opt-in): one microVM per box, build microVM, vsock channel, jailer (opt-in), image pruning, `setup --firecracker`, `doctor`, CI job | ✅ (tested on AMD/WSL2 with nested virtualization) |
-| later | public driver API, SDK index | ⬜ |
+- a public driver API (own isolation drivers outside this repository)
+- an SDK index (finding and installing SDKs by name)

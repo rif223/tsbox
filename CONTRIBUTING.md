@@ -29,8 +29,8 @@ bash scripts/fuzz.sh                             # all fuzz targets
 
 ## Layout
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (§9, project structure). The phase documents in `docs/`
-record decisions, measurements and findings.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (§9, project structure). [docs/NOTES.md](docs/NOTES.md)
+records measurements, design decisions, platform pitfalls and known limits.
 
 By contributing you agree that your contribution is licensed under the Apache License 2.0 (see
 [LICENSE](LICENSE)).

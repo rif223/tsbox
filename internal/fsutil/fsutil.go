@@ -9,7 +9,7 @@ import (
 
 // Rename atomically replaces to with from. On Windows, virus scanners or indexers sometimes keep freshly
 // written files (for directories: a file inside) open for a moment; Rename then fails with "Access is
-// denied" and succeeds shortly afterwards. Full go test ./... run in phase 3: TestEcho (directory in sdkreg).
+// denied" and succeeds shortly afterwards. Seen in full go test ./... runs: TestEcho (directory in sdkreg).
 func Rename(from, to string) error {
 	var err error
 	for i := 0; i < 40; i++ {

@@ -9,9 +9,8 @@ Run TypeScript (Deno) in isolation – like Docker, but for scripts.
 - Inside it one Deno process per **script**, with its own UID and its own limits.
 - The only channel is stdin/stdout (no network, no writable host path).
 
-> Status: **phase 6 (Firecracker driver)**, see [docs/phase6.md](docs/phase6.md) and [docs/phase5.md](docs/phase5.md). Architecture:
-> [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), spike: [docs/spike-2026-11.md](docs/spike-2026-11.md),
-> Firecracker comparison: [docs/firecracker-test.md](docs/firecracker-test.md).
+> Docs: [architecture](docs/ARCHITECTURE.md), [notes](docs/NOTES.md) (measurements, design decisions, limits),
+> [gVisor spike](docs/gvisor-spike.md), [Firecracker compared with gVisor](docs/firecracker-test.md).
 
 ## Install
 

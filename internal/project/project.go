@@ -133,7 +133,7 @@ func ParseBytes(s string) (int64, error) {
 		}
 	}
 	v, err := strconv.ParseFloat(s, 64)
-	// NaN, Inf and values from 2^63 would turn into negative sizes when converted (fuzz finding, phase 4).
+	// NaN, Inf and values from 2^63 would turn into negative sizes when converted (fuzz finding).
 	if err != nil || !(v >= 0) || v*float64(mult) >= math.MaxInt64 {
 		return 0, fmt.Errorf("invalid size %q (examples: 128Mi, 1Gi)", orig)
 	}

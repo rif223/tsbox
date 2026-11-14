@@ -263,7 +263,7 @@ func coreHash() string {
 
 // writeCore stores @tsbox/core once per core version. Parallel builds read the directory, so it is
 // written to a sibling directory and renamed atomically, never overwritten (before: rewritten on every
-// build, and a parallel build saw an empty file – load test finding, phase 5).
+// build, and a parallel build saw an empty file – found by the load test).
 func writeCore(dir string) error {
 	done := filepath.Join(dir, ".complete")
 	if _, err := os.Stat(done); err == nil {

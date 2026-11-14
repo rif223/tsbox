@@ -493,7 +493,7 @@ func (b *Box) logLocked(s *script, level, msg string) {
 		level = "info"
 	}
 	// Check on arrival: on Windows the message is followed by a native stack trace that often has more than
-	// 20 lines (before: a ring buffer of the last 20 lines; finding, phase 4).
+	// 20 lines (before: a ring buffer of the last 20 lines, which missed it on Windows).
 	if level == "stderr" && heapOOM.MatchString(msg) {
 		s.heapOOM = true
 	}

@@ -17,7 +17,7 @@ import (
 	"github.com/rif223/tsbox/internal/fcproto"
 )
 
-// Build microVM (like the gVisor build sandbox, P1 S08):
+// Build microVM (like the gVisor build sandbox):
 //   - its own VM without network device; deno runs as UID 65534 without capabilities
 //   - sources, SDK modules, @tsbox/core and the esbuild cache (DENO_DIR) arrive as files and are read-only
 //   - the bundle comes back over vsock

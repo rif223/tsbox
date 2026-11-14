@@ -1,6 +1,6 @@
 // Package gvisor starts boxes with runsc (gVisor). The only channel is the stdin/stdout of "runsc run"
 // (--host-uds=none, no socket mount, no writable host path). Linux with cgroup v2 only; runsc runs as
-// root. Measurements and background: tsbox/docs/spike-2026-11.md.
+// root. Measurements and background: docs/gvisor-spike.md.
 package gvisor
 
 import (
@@ -81,7 +81,7 @@ func (d *Driver) globalFlags() []string {
 		"--directfs",
 		"--host-uds=none", // channel over stdio, no host sockets (spike a)
 		// No overlay: otherwise runsc puts a writable layer (in memory) over the rootfs, and the rootfs's /tmp
-		// would be writable for all scripts – despite root.readonly (E2E finding, phase 1).
+		// would be writable for all scripts – despite root.readonly (found by the escape simulation).
 		"--overlay2=none",
 	}
 }
@@ -133,7 +133,7 @@ func (d *Driver) Start(ctx context.Context, spec driver.Spec) (driver.Box, error
 	if spec.OOMScoreAdj != 0 {
 		// Via "tsbox __oomexec" all processes of the box (sentry, gofer, systrap stubs) inherit the value from
 		// the start. Via the OCI spec only sentry and gofer would get it, not the stubs – then the cgroup OOM
-		// would hit the sentry (the whole box) instead of the largest script (E2E finding TestBoxOOM, phase 4).
+		// would hit the sentry (the whole box) instead of the largest script (found by TestBoxOOM).
 		cmd = exec.Command(spec.Init, append([]string{"__oomexec", strconv.Itoa(spec.OOMScoreAdj), "--", d.cfg.Runsc}, args...)...)
 	}
 	cmd.Env = []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}

@@ -1,6 +1,6 @@
 package tsbox
 
-// Benchmarks (phase 5): start time, RAM and CPU per box and script, build cold and from the cache. Driver
+// Benchmarks: start time, RAM and CPU per box and script, build cold and from the cache. Driver
 // via TSBOX_TEST_DRIVER as for the E2E tests.
 //
 //	go test -run '^$' -bench . -benchtime 5x .

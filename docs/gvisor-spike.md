@@ -1,6 +1,7 @@
-# tsbox – Spike phase 0 (2026-11-01)
+# tsbox – gVisor spike (2026-11-01)
 
-Goal: check the eight assumptions from [ARCHITECTURE.md](ARCHITECTURE.md), phase 0, before building on them.
+Goal: check the eight assumptions the design of [ARCHITECTURE.md](ARCHITECTURE.md) rests on, before building on
+them.
 
 **Environment:**
 - WSL2 Ubuntu 24.04 on Snapdragon X Elite (arm64), kernel 6.18
@@ -9,7 +10,7 @@ Goal: check the eight assumptions from [ARCHITECTURE.md](ARCHITECTURE.md), phase
 - Windows 11 (ARM64) with Deno 2.9.6 win32-x64
 
 **Code:** the throwaway code (`spike/`: spike init, host starter for `runsc run`, Deno test scripts, test runs)
-was removed after phase 3; the results are recorded here.
+was removed later; the results are recorded here.
 
 ## Results at a glance
 
@@ -120,7 +121,7 @@ error: Failed loading https://registry.npmjs.org/@esbuild%2flinux-arm64 for pack
 2. tsbox reads `memory.events`. If `oom_kill` rises while a script ends with a SIGKILL that init did not send, the reason is **`oom`** (script).
 3. Restart and breaker work per script.
 4. **Box watchdog:** the host pings init over the channel. If the pong does not come, `cgroup.kill` follows and the box becomes `quarantined`. The same applies if the sandbox itself dies.
-5. Phase 1 also checks `oom_score_adj` for sentry and gofer, so that the OOM killer prefers to hit stubs.
+5. tsbox also sets `oom_score_adj` for the box processes, so that the host OOM killer hits boxes first.
 6. Because the limits would otherwise have no effect, tsbox never pre-creates the cgroup itself.
 
 ## g) Script end despite open stdin ✅
@@ -155,13 +156,13 @@ Rated as **convenience, not a security boundary**: whoever writes raw bytes past
    - **Consequence:** the script RSS limit applies to `VmRSS − baseline`. init measures the baseline once per profile on an empty Deno process. The limit is approximate (±10 MiB). The hard limit remains the box cgroup, whose OOM hits the largest script according to f).
 2. **Base cost of a box with the Go init: 13.0 MiB** (`memory.current` after 8 s idle); with an empty Deno script 30.7 MiB.
    - My expectation in the proposal ("4–6 MiB instead of 14") was wrong: the ≈ 14 MiB of the old model are already sentry and gofer.
-   - What the Go init really saves is the Deno runner process, ≈ 12–18 MiB per box. The exact comparison comes in phase 5.
+   - What the Go init really saves is the Deno runner process, ≈ 12–18 MiB per box (measurements: [NOTES.md](NOTES.md)).
 3. **`deno bundle` does not check types without `--check`:** a script with a type error is built (verified on Windows, exit 0). In tsbox the build therefore always runs with `--check`.
 4. **Deno does not need `/tmp`:** with a non-writable `DENO_DIR` and without `/tmp`, a script starts in 100 ms (`console.log` works). **Consequence:** the box no longer gets a shared `/tmp`. This closes the channel between scripts from b).
 
 Also noticed in passing: `deno bundle` knows `--no-remote` (for the dev build without a sandbox).
 
-## 10. Not checked (deliberately, comes in phase 1)
+## 10. Not checked in the spike (covered later by the tests)
 
 - Windows job objects (RAM, CPU, process count) in the dev driver
 - macOS

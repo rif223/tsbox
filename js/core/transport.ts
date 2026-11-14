@@ -4,7 +4,7 @@
  *
  * Lifetime: stdin is only read "referenced" while something expects an answer (open calls, event
  * subscriptions, keepAlive). Otherwise the process ends like a normal Deno script as soon as its event
- * loop is empty (spike g, docs/spike-2026-11.md).
+ * loop is empty (spike g, docs/gvisor-spike.md).
  * @module
  */
 import { encodeFrame, type Frame, FrameDecoder, writeAllSync } from "./frames.ts";

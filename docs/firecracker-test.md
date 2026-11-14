@@ -49,7 +49,7 @@ Without a CPU limit Firecracker needs 0.87 s (1 script) and 0.96 s (4 scripts, 1
 - **RAM:** Firecracker needs about 60 MiB more per box: its own guest kernel, and every VM keeps the used parts
   of the Deno binary in its own page cache. The numbers are not measured the same way: Firecracker's value is
   the RSS of the VM process, gVisor's is the box cgroup, which does not count the sentry's shared memory
-  (phase5.md); gVisor's real value is somewhat higher.
+  (NOTES.md); gVisor's real value is somewhat higher.
 - **gVisor kvm** only lowered the idle CPU here and was not faster to start, probably also because of the
   nesting.
 
@@ -79,4 +79,4 @@ Without a CPU limit Firecracker needs 0.87 s (1 script) and 0.96 s (4 scripts, 1
 The test scripts are not part of the repository (throwaway code, as with the spike). Steps: Firecracker
 release tarball, guest kernel and Ubuntu squashfs from `s3://spec.ccfc.min/firecracker-ci/<version>/<arch>/`,
 Deno into the rootfs, an init that starts the scripts, `firecracker --no-api --config-file` with a read-only
-root drive; gVisor via `bench_test.go` as in phase5.md.
+root drive; gVisor via `bench_test.go` (NOTES.md, section 1).

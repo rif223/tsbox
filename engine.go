@@ -527,12 +527,12 @@ func (e *Engine) Check(ctx context.Context, spec BoxSpec) (map[string]string, er
 	return out, nil
 }
 
-// bundle builds a script (phase 2: under gVisor in a build sandbox without network, otherwise on the host).
+// bundle builds a script (gvisor/firecracker: in a build sandbox without network, otherwise on the host).
 func (e *Engine) bundle(ctx context.Context, entry string, imports map[string]string) (build.Artifact, error) {
 	o := build.Options{Deno: e.cfg.deno, StoreDir: filepath.Join(e.cfg.stateDir, "artifacts"), Imports: imports,
 		NoCache: e.cfg.noBuildCache}
 	deno := e.cfg.deno
-	// Under gVisor the build runs in its own sandbox without network (P1 S08); dev builds on the host with
+	// Under gVisor the build runs in its own sandbox without network; dev builds on the host with
 	// --no-remote --no-npm.
 	if sd, ok := e.driver.(sandboxBuilder); ok {
 		e.cacheMu.Lock()

@@ -18,7 +18,7 @@ import (
 	"github.com/rif223/tsbox/internal/driver/cgroup"
 )
 
-// Build sandbox (P1 S08): deno bundle runs in its own gVisor sandbox
+// Build sandbox: deno bundle runs in its own gVisor sandbox
 //   - without network (--network=none), as UID 65534 without capabilities
 //   - sources, SDK modules and @tsbox/core read-only; no writable host path
 //   - esbuild comes from a read-only DENO_DIR (spike e) that tsbox fills once with the rootfs's Deno
