@@ -1,0 +1,117 @@
+package gvisor
+
+import (
+	"encoding/json"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/rif223/tsbox/internal/driver"
+)
+
+// TestProfile: invariant I8 – no writable host path and no /tmp in the box; init has exactly the three
+// capabilities for the UID switch.
+func TestProfile(t *testing.T) {
+	spec := driver.Spec{ID: "b1", Limits: driver.Limits{MemoryBytes: 128 << 20, CPUCores: 0.5, PIDs: 64}, ArtifactsDir: "/host/a", Init: "/x"}
+	b, _ := json.Marshal(ociSpec(Config{RootFS: "/rootfs", CgroupParent: "/tsbox"}, spec, "/host/init"))
+	var oci struct {
+		Process struct {
+			User            struct{ UID int }
+			Capabilities    map[string][]string
+			NoNewPrivileges bool
+			Env             []string
+		}
+		Root   struct{ Readonly bool }
+		Mounts []struct {
+			Destination, Type, Source string
+			Options                   []string
+		}
+		Linux struct {
+			Resources struct {
+				Memory struct{ Limit, Swap int64 }
+				Pids   struct{ Limit int }
+			}
+		}
+	}
+	if err := json.Unmarshal(b, &oci); err != nil {
+		t.Fatal(err)
+	}
+	if !oci.Root.Readonly || !oci.Process.NoNewPrivileges {
+		t.Fatal("rootfs not ro or no_new_privs missing")
+	}
+	want := []string{"CAP_SETUID", "CAP_SETGID", "CAP_KILL"}
+	for set, caps := range oci.Process.Capabilities {
+		if set == "inheritable" || set == "ambient" {
+			if len(caps) != 0 {
+				t.Errorf("%s: %v", set, caps)
+			}
+			continue
+		}
+		if !slices.Equal(caps, want) {
+			t.Errorf("%s = %v, expected %v", set, caps, want)
+		}
+	}
+	for _, m := range oci.Mounts {
+		if m.Destination == "/tmp" && !slices.Contains(m.Options, "ro") {
+			t.Error("/tmp must be read-only (otherwise runsc mounts a writable tmpfs)")
+		}
+		if m.Type == "bind" && !slices.Contains(m.Options, "ro") {
+			t.Errorf("bind mount %s is writable", m.Destination)
+		}
+		if strings.Contains(m.Source, "sock") {
+			t.Errorf("socket mount %s", m.Source)
+		}
+	}
+	if r := oci.Linux.Resources; r.Memory.Limit != 128<<20 || r.Memory.Swap != r.Memory.Limit || r.Pids.Limit != 64 {
+		t.Errorf("Limits: %+v", r)
+	}
+	for _, e := range oci.Process.Env {
+		if !strings.HasPrefix(e, "NO_COLOR=") {
+			t.Errorf("unexpected environment %q", e)
+		}
+	}
+}
+
+// TestProfileRootFSAndOOM: the box's profile replaces the driver's rootfs; oomScoreAdj is in the process
+// (runsc applies it to sentry and gofer).
+func TestProfileRootFSAndOOM(t *testing.T) {
+	spec := driver.Spec{ID: "b1", Limits: driver.Limits{MemoryBytes: 128 << 20, CPUCores: 0.5, PIDs: 64}, ArtifactsDir: "/host/a",
+		Init: "/x", RootFS: "/profiles/next", OOMScoreAdj: 500}
+	var oci struct {
+		Process struct{ OOMScoreAdj *int }
+		Root    struct{ Path string }
+	}
+	b, _ := json.Marshal(ociSpec(Config{RootFS: "/rootfs", CgroupParent: "/tsbox"}, spec, "/host/init"))
+	if err := json.Unmarshal(b, &oci); err != nil {
+		t.Fatal(err)
+	}
+	if oci.Root.Path != "/profiles/next" || oci.Process.OOMScoreAdj == nil || *oci.Process.OOMScoreAdj != 500 {
+		t.Fatalf("%s", b)
+	}
+	spec.RootFS = ""
+	b, _ = json.Marshal(ociSpec(Config{RootFS: "/rootfs", CgroupParent: "/tsbox"}, spec, "/host/init"))
+	if json.Unmarshal(b, &oci); oci.Root.Path != "/rootfs" {
+		t.Fatalf("default rootfs: %s", oci.Root.Path)
+	}
+	if spec.OOMScoreAdj = 1001; spec.Validate() == nil {
+		t.Fatal("oom_score_adj 1001 accepted")
+	}
+}
+
+func TestPlatform(t *testing.T) {
+	old := KVMDevice
+	defer func() { KVMDevice = old }()
+	KVMDevice = t.TempDir() + "/missing"
+	if err := checkPlatform("kvm"); err == nil || !strings.Contains(err.Error(), "systrap") {
+		t.Fatalf("kvm without device: %v", err)
+	}
+	if err := checkPlatform("ptrace"); err == nil {
+		t.Fatal("unknown platform accepted")
+	}
+	if err := checkPlatform("systrap"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(Config{Platform: "kvm", RootFS: "/x", StateDir: "/y"}); err == nil {
+		t.Fatal("New with kvm without device")
+	}
+}

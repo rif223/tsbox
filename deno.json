@@ -1,0 +1,11 @@
+{
+  "fmt": { "lineWidth": 120, "exclude": ["**/*.md", ".tsbox/"] },
+  "lint": { "exclude": [".tsbox/"], "rules": { "exclude": ["no-slow-types"] } },
+  "imports": {
+    "@tsbox/core": "./js/core/mod.ts",
+    "@tsbox/echo": "./sdks/echo/mod.ts",
+    "@tsbox/http": "./sdks/http/mod.ts",
+    "@tsbox/kv": "./sdks/kv/mod.ts",
+    "@tsbox/log": "./sdks/log/mod.ts"
+  }
+}

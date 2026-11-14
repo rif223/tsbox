@@ -1,0 +1,17 @@
+{
+  "name": "log",
+  "version": "0.1.0",
+  "tsbox": "^0.1",
+  "description": "Structured logs with level and fields",
+  "provider": { "builtin": "log" },
+  "methods": {
+    "write": {
+      "rate": "50/s",
+      "burst": 200,
+      "concurrency": 32,
+      "maxParams": "16Ki",
+      "maxResult": "64",
+      "timeout": "5s"
+    }
+  }
+}

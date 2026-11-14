@@ -1,0 +1,37 @@
+{
+  "name": "http",
+  "version": "0.1.0",
+  "tsbox": "^0.1",
+  "description": "HTTP fetch with host allowlist, size and time limit",
+  "provider": { "builtin": "http" },
+  "config": {
+    "maxBody": { "type": "bytes", "default": "1Mi", "description": "largest response" },
+    "timeout": { "type": "duration", "default": "10s", "description": "time limit per request" },
+    "userAgent": { "type": "string", "default": "tsbox-http/0.1" },
+    "allowHTTP": { "type": "bool", "default": "false", "description": "also allow unencrypted http://" },
+    "allowPrivate": {
+      "type": "bool",
+      "default": "false",
+      "description": "allow private, loopback and link-local addresses"
+    }
+  },
+  "permissions": {
+    "host": {
+      "type": "host-pattern",
+      "multiple": true,
+      "required": true,
+      "description": "hosts the script may fetch (e.g. api.github.com, *.example.org)"
+    }
+  },
+  "methods": {
+    "fetch": {
+      "permission": "host",
+      "rate": "10/s",
+      "burst": 20,
+      "concurrency": 4,
+      "maxParams": "256Ki",
+      "maxResult": "1020Ki",
+      "timeout": "30s"
+    }
+  }
+}

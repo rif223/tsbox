@@ -1,0 +1,134 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Unit tests and E2E with real Deno processes (dev driver) on all three systems, fuzzing of all parsers.
+  go:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.9.6
+      - run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - run: GOOS=linux go vet ./... && GOOS=windows go vet ./... && GOOS=darwin go vet ./...
+      - run: go test -count=1 -timeout 25m ./...
+      - if: matrix.os == 'ubuntu-24.04'
+        run: go test -race -count=1 ./internal/... ./manifest/...
+      # Invariant I5: no input crashes a parser (all fuzz targets, 15 s each).
+      - if: matrix.os == 'ubuntu-24.04'
+        run: FUZZTIME=15s bash scripts/fuzz.sh
+      - if: matrix.os == 'ubuntu-24.04'
+        run: CGO_ENABLED=0 go build -o /dev/null ./cmd/tsbox
+
+  # E2E with gVisor (isolation, canary in the box memory, oom_score_adj, profiles, load test): runsc in a
+  # fixed version, rootfs with scripts/build-rootfs.sh, tests as root via scripts/wsl-test.sh.
+  gvisor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      RUNSC_VERSION: "20261026.0"
+      RUNSC_SHA256: fed7f0497aef8e3b9d91785d825ce71b063cb3ff4a102f25eb41c1b52f45eaae
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.9.6
+      - name: Install gVisor (runsc)
+        run: |
+          curl -fsSL -o runsc.deb "https://storage.googleapis.com/gvisor/releases/pool/${RUNSC_VERSION}/binary-amd64/runsc.deb"
+          echo "${RUNSC_SHA256}  runsc.deb" | sha256sum -c -
+          sudo dpkg -i runsc.deb
+          runsc --version
+      - name: Build the rootfs (Debian minbase + Deno)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debootstrap
+          sudo DENO="$(command -v deno)" bash scripts/build-rootfs.sh
+      - name: E2E with gVisor
+        run: sudo env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$(go env GOCACHE)" "GOMODCACHE=$(go env GOMODCACHE)" TSBOX_DRIVERS=gvisor bash scripts/wsl-test.sh -v
+      # Benchmarks with systrap and, if the runner has KVM, with kvm; plus the isolation tests under kvm.
+      - name: Benchmarks and KVM
+        run: |
+          run() { sudo env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$(go env GOCACHE)" "GOMODCACHE=$(go env GOMODCACHE)" CGO_ENABLED=0 TSBOX_TEST_DRIVER=gvisor "$@"; }
+          run TSBOX_PLATFORM=systrap go test -run '^$' -bench . -benchtime 3x .
+          if [ -e /dev/kvm ]; then
+            run TSBOX_PLATFORM=kvm go test -count=1 -run 'TestHello|TestEscape|TestSiblingsAndNetwork|TestBoxOOM' .
+            run TSBOX_PLATFORM=kvm go test -run '^$' -bench . -benchtime 3x .
+          else
+            echo "no /dev/kvm on this runner"
+          fi
+
+  # E2E with the opt-in firecracker driver (needs KVM): firecracker, jailer and the guest kernel via
+  # "tsbox setup --firecracker" (SHA-256 / configuration checked), rootfs as for gVisor. Without /dev/kvm on
+  # the runner the job only reports that.
+  firecracker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.9.6
+      - name: KVM
+        id: kvm
+        run: |
+          if [ -e /dev/kvm ]; then echo "ok=1" >> "$GITHUB_OUTPUT"; ls -l /dev/kvm; else echo "no /dev/kvm on this runner"; fi
+      - name: Build the rootfs and install Firecracker
+        if: steps.kvm.outputs.ok == '1'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debootstrap e2fsprogs
+          sudo DENO="$(command -v deno)" bash scripts/build-rootfs.sh
+          CGO_ENABLED=0 go build -o tsbox ./cmd/tsbox
+          sudo env "PATH=$PATH" ./tsbox setup --firecracker --no-rootfs --no-systemd
+      - name: E2E with Firecracker
+        if: steps.kvm.outputs.ok == '1'
+        run: sudo env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$(go env GOCACHE)" "GOMODCACHE=$(go env GOMODCACHE)" TSBOX_DRIVERS=firecracker bash scripts/wsl-test.sh -v
+      - name: Jailer and benchmarks
+        if: steps.kvm.outputs.ok == '1'
+        run: |
+          run() { sudo env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$(go env GOCACHE)" "GOMODCACHE=$(go env GOMODCACHE)" CGO_ENABLED=0 TSBOX_TEST_DRIVER=firecracker "$@"; }
+          run TSBOX_FC_JAILER=1 go test -count=1 -run 'TestHello|TestEscape|TestSiblingsAndNetwork|TestBoxOOM|TestFirecrackerJail' .
+          run go test -run '^$' -bench . -benchtime 3x .
+
+  deno:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.9.6
+      - run: deno fmt --check
+      - run: deno lint
+      - run: deno check js/core/mod.ts js/core/boot.ts sdks/*/mod.ts sdks/echo/provider/provider.ts examples/*.ts
+
+  shell:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck scripts/*.sh

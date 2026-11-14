@@ -1,0 +1,15 @@
+{
+  "name": "secretlen",
+  "version": "0.1.0",
+  "tsbox": "^0.1",
+  "description": "Test SDK: secret only on the host, the script sees only its length",
+  "import": "@test/secretlen",
+  "module": "mod.ts",
+  "provider": { "exec": ["deno", "run", "--no-prompt", "--no-config", "provider/provider.ts"] },
+  "config": {
+    "token": { "type": "secret", "required": true, "description": "secret value" }
+  },
+  "methods": {
+    "len": { "rate": "10/s", "burst": 10, "maxParams": "256", "maxResult": "256", "timeout": "5s" }
+  }
+}

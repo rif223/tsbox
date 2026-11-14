@@ -1,0 +1,20 @@
+{
+  "name": "echo",
+  "version": "0.1.0",
+  "tsbox": "^0.1",
+  "description": "Template SDK with an external provider (Deno process, frames over stdio)",
+  "provider": { "exec": ["deno", "run", "--no-prompt", "--no-config", "provider/provider.ts"] },
+  "config": {
+    "prefix": { "type": "string", "default": "echo: ", "description": "prefix of the answer" }
+  },
+  "permissions": {
+    "ticks": { "type": "int", "description": "at most this many events per call of tick (default 3)" }
+  },
+  "methods": {
+    "echo": { "rate": "20/s", "burst": 40, "maxParams": "4Ki", "maxResult": "8Ki", "timeout": "5s" },
+    "tick": { "rate": "2/s", "burst": 4, "maxParams": "256", "maxResult": "256", "timeout": "10s" }
+  },
+  "events": {
+    "tick": { "description": "n-th tick of a tick call" }
+  }
+}

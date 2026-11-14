@@ -1,0 +1,8 @@
+# Binaries
+/tsbox
+/tsbox.exe
+/bin/
+# Editor types from "tsbox types"
+.tsbox/
+# compiled Go test binaries
+*.test
