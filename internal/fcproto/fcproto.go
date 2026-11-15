@@ -157,6 +157,12 @@ func AddTree(tw *tar.Writer, hostDir, guestDir string) error {
 	if err != nil {
 		return err
 	}
+	// Link targets are compared with the resolved root: if the root itself lies below a symlink (macOS:
+	// /var -> /private/var), EvalSymlinks of a link inside the tree would otherwise look like "outside".
+	realRoot := root
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		realRoot = r
+	}
 	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -172,7 +178,7 @@ func AddTree(tw *tar.Writer, hostDir, guestDir string) error {
 		}
 		if d.Type()&fs.ModeSymlink != 0 {
 			target, err := filepath.EvalSymlinks(p)
-			if err != nil || !within(root, target) {
+			if err != nil || !within(realRoot, target) {
 				return nil
 			}
 		}

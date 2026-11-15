@@ -74,7 +74,13 @@ jobs:
           run() { sudo env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$(go env GOCACHE)" "GOMODCACHE=$(go env GOMODCACHE)" CGO_ENABLED=0 TSBOX_TEST_DRIVER=gvisor "$@"; }
           run TSBOX_PLATFORM=systrap go test -run '^$' -bench . -benchtime 3x .
           if [ -e /dev/kvm ]; then
-            run TSBOX_PLATFORM=kvm go test -count=1 -run 'TestHello|TestEscape|TestSiblingsAndNetwork|TestBoxOOM' .
+            # On failure: kernel log (OOM killer?) and runsc's debug logs (TSBOX_RUNSC_DEBUG, diagnosis only).
+            sudo mkdir -p /tmp/runsc-debug
+            run TSBOX_PLATFORM=kvm TSBOX_RUNSC_DEBUG=/tmp/runsc-debug go test -count=1 -v -run 'TestHello|TestEscape|TestSiblingsAndNetwork|TestBoxOOM' . || {
+              echo "== dmesg"; sudo dmesg | tail -60
+              echo "== runsc panics and errors"; sudo sh -c 'cat /tmp/runsc-debug/panic-* 2>/dev/null; grep -hiE "panic|fatal|out of memory|oom|killed|exited with|error" /tmp/runsc-debug/* 2>/dev/null | tail -80'
+              exit 1
+            }
             run TSBOX_PLATFORM=kvm go test -run '^$' -bench . -benchtime 3x .
           else
             echo "no /dev/kvm on this runner"

@@ -16,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rif223/tsbox/internal/driver"
@@ -74,7 +75,7 @@ func (d *Driver) Name() string   { return "gvisor" }
 func (d *Driver) Isolated() bool { return true }
 
 func (d *Driver) globalFlags() []string {
-	return []string{
+	flags := []string{
 		"--root=" + filepath.Join(d.cfg.StateDir, "runsc"),
 		"--network=none",
 		"--platform=" + d.cfg.Platform,
@@ -84,6 +85,12 @@ func (d *Driver) globalFlags() []string {
 		// would be writable for all scripts – despite root.readonly (found by the escape simulation).
 		"--overlay2=none",
 	}
+	// Diagnosis only (e.g. CI): runsc writes its debug logs (one file per command and sandbox) into this
+	// directory. They can be large and contain script output; never set in production.
+	if dir := os.Getenv("TSBOX_RUNSC_DEBUG"); dir != "" {
+		flags = append(flags, "--debug", "--debug-log="+strings.TrimSuffix(dir, "/")+"/", "--panic-log="+strings.TrimSuffix(dir, "/")+"/panic-%ID%.log")
+	}
+	return flags
 }
 
 type box struct {

@@ -312,9 +312,19 @@ func TestBoxOOM(t *testing.T) {
 	}
 	e, rec := newEngine(t)
 	spec := one(t, "attack/rss.ts", func(s *BoxSpec) { s.Limits.Memory = 192 << 20 })
-	ex := lastExit(t, runToEnd(t, e, spec, 90*time.Second))
+	st := runToEnd(t, e, spec, 90*time.Second)
+	ex := lastExit(t, st)
 	if ex.Reason != ReasonOOM || !rec.eventually(EventOOM) {
-		t.Fatalf("reason %+v, OOM event %v", ex, rec.has(EventOOM))
+		// Diagnosis for the CI (gVisor with the kvm platform: the sandbox dies instead of one script).
+		rec.mu.Lock()
+		for _, ev := range rec.events {
+			t.Logf("event %s %s %s %s", ev.Kind, ev.Script, ev.Detail, exitText(ev.Exit))
+		}
+		for _, l := range rec.logs {
+			t.Logf("log %s %s: %s", l.Script, l.Level, l.Msg)
+		}
+		rec.mu.Unlock()
+		t.Fatalf("reason %+v, OOM event %v; box state %s, error %q", ex, rec.has(EventOOM), st.State, st.Error)
 	}
 }
 
@@ -532,4 +542,11 @@ func TestStartCPU(t *testing.T) {
 		}
 		_ = b.Stop(context.Background(), time.Second)
 	}
+}
+
+func exitText(ex *ExitStatus) string {
+	if ex == nil {
+		return ""
+	}
+	return fmt.Sprintf("reason=%s code=%d signal=%s detail=%s", ex.Reason, ex.Code, ex.Signal, ex.Detail)
 }
