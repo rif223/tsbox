@@ -93,7 +93,7 @@ func lockState(stateDir string) (func(), error) {
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("already running for %s", stateDir)
+		return nil, fmt.Errorf("already running for %s (stop it with \"tsbox daemon stop\")", stateDir)
 	}
 	_ = f.Truncate(0)
 	_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())

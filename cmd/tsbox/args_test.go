@@ -4,6 +4,7 @@ import (
 	"flag"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -118,5 +119,25 @@ func TestNotFound(t *testing.T) {
 	}
 	if msg := notFound("does-not-exist.ts"); strings.Contains(msg, "did you mean") {
 		t.Errorf("does-not-exist.ts: %q", msg)
+	}
+}
+
+func TestHintPath(t *testing.T) {
+	cases := map[string]string{
+		"greet":                 "./greet",
+		"greet/example.ts":      "./greet/example.ts",
+		"./greet":               "./greet",
+		"../x/greet":            "../x/greet",
+		"sub dir/greet":         `"./sub dir/greet"`,
+		filepath.Join("a", "b"): "./a/b",
+	}
+	for in, want := range cases {
+		if got := hintPath(in); got != want {
+			t.Errorf("hintPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+	abs, _ := filepath.Abs("x y")
+	if got := hintPath(abs); got != `"`+filepath.ToSlash(abs)+`"` {
+		t.Errorf("absolute: %q", got)
 	}
 }

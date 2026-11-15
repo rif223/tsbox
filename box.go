@@ -92,6 +92,14 @@ type script struct {
 	runSeq   int
 }
 
+// Validate checks the specification as the engine does before creating the box (names, limits; zero
+// values mean the defaults). SDKs and entry files are not checked.
+func (s BoxSpec) Validate() error {
+	s.Scripts = append([]ScriptSpec(nil), s.Scripts...) // normalize fills in defaults; the caller's spec stays
+	_, err := normalize(s)
+	return err
+}
+
 func normalize(s BoxSpec) (BoxSpec, error) {
 	if !boxName.MatchString(s.Name) {
 		return s, fmt.Errorf("invalid box name %q (allowed: a-z, 0-9, -, 1-48 characters)", s.Name)
@@ -484,7 +492,12 @@ func (b *Box) dispatch(f *proto.Frame) {
 	}
 }
 
-var heapOOM = regexp.MustCompile(`(?i)(JavaScript heap out of memory|Fatal JavaScript out of memory|Reached heap limit)`)
+var (
+	heapOOM = regexp.MustCompile(`(?i)(JavaScript heap out of memory|Fatal JavaScript out of memory|Reached heap limit)`)
+	// v8Noise: lines of V8's "Last few GCs" block ("<--- Last few GCs --->", "[pid:0x...]   105 ms: Mark-Compact ...",
+	// a lone "#").
+	v8Noise = regexp.MustCompile(`^(<--- (Last few GCs|JS stacktrace) --->|\[\d+:[0-9A-Fa-fx]+\]\s+\d+ ms: .*|#)$`)
+)
 
 func (b *Box) logLocked(s *script, level, msg string) {
 	switch level {
@@ -494,8 +507,15 @@ func (b *Box) logLocked(s *script, level, msg string) {
 	}
 	// Check on arrival: on Windows the message is followed by a native stack trace that often has more than
 	// 20 lines (before: a ring buffer of the last 20 lines, which missed it on Windows).
-	if level == "stderr" && heapOOM.MatchString(msg) {
-		s.heapOOM = true
+	// V8's GC trace before and the native stack trace after the OOM message say nothing to script authors
+	// (about 60 lines on Windows); the OOM line itself and "script ended: heap" remain.
+	if level == "stderr" {
+		switch {
+		case s.heapOOM || v8Noise.MatchString(msg):
+			return
+		case heapOOM.MatchString(msg):
+			s.heapOOM = true
+		}
 	}
 	now := time.Now()
 	s.tokens = min(logBurst, s.tokens+now.Sub(s.tokensAt).Seconds()*logRate)
@@ -664,6 +684,16 @@ func (b *Box) markHung() {
 // boxEnded cleans up after the sandbox has ended.
 func (b *Box) boxEnded(drv driver.Box, gen int) {
 	err := drv.Err()
+	// If the kernel's OOM killer hit the sandbox itself (not only a script inside), the box just "dies".
+	// The cgroup still counts the kill until Close: then it is the box memory limit, not an unknown death.
+	var oomKills int
+	if err == nil || !errors.Is(err, driver.ErrBoxOOM) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if st, serr := drv.Stats(ctx); serr == nil {
+			oomKills = st.OOMKills
+		}
+		cancel()
+	}
 	_ = drv.Close()
 	b.mu.Lock()
 	if b.gen != gen {
@@ -683,6 +713,10 @@ func (b *Box) boxEnded(drv driver.Box, gen int) {
 		reason = ReasonOOM
 		b.errMsg = err.Error()
 		b.e.emit(Event{At: now, Kind: EventOOM, Box: b.spec.Name, Detail: err.Error()})
+	case oomKills > b.oomSeen && !b.stopping:
+		reason = ReasonOOM
+		b.errMsg = driver.ErrBoxOOM.Error() + " (the kernel ended the sandbox)"
+		b.e.emit(Event{At: now, Kind: EventOOM, Box: b.spec.Name, Detail: b.errMsg})
 	}
 	for _, s := range b.scripts {
 		s.endRunLocked()

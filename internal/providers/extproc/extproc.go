@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -128,6 +129,9 @@ func (p *Provider) ensure(ctx context.Context) (*proc, error) {
 	}
 	cmd.Stderr = &logWriter{l: p.cfg.Logger, name: p.cfg.Name}
 	if err := cmd.Start(); err != nil {
+		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("starting provider %s: program %s not found (a compiled provider must be built first, e.g. go build -C provider -o provider .)", p.cfg.Name, cmd.Args[0])
+		}
 		return nil, fmt.Errorf("starting provider %s: %w", p.cfg.Name, err)
 	}
 	pr := &proc{cmd: cmd, w: stdin, pending: map[uint64]chan *proto.Frame{}, opens: map[string]chan *proto.Frame{},

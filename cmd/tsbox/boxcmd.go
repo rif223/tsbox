@@ -136,6 +136,14 @@ func psCmd(args []string) int {
 			state := string(b.State)
 			if b.Error != "" && !running(b.State) {
 				state += " (" + trunc(b.Error, 40) + ")"
+			} else if !running(b.State) && len(b.Scripts) == 1 && b.Scripts[0].LastExit != nil {
+				// like docker ps: "exited (3)", or the reason of a limit ("exited (timeout)")
+				ex := b.Scripts[0].LastExit
+				if ex.Reason == tsbox.ReasonExit || ex.Reason == tsbox.ReasonCrash {
+					state += fmt.Sprintf(" (%d)", ex.Code)
+				} else {
+					state += " (" + string(ex.Reason) + ")"
+				}
 			}
 			proj := b.Labels[client.LabelProject]
 			if proj == "" {
@@ -202,14 +210,14 @@ func logsCmd(args []string) int {
 		for l, err := range c.Logs(ctx, names[0], client.LogQuery{Follow: *follow, Since: from, Script: *script, Tail: *tail}) {
 			if err != nil {
 				if ctx.Err() != nil {
-					return 0
+					return exitInterrupt // Ctrl+C, like run
 				}
 				fmt.Fprintln(os.Stderr, "tsbox:", err)
 				return 1
 			}
 			printLogLine(l, prefix, *ts)
 		}
-		return 0
+		return interrupted(ctx)
 	})
 }
 
@@ -258,7 +266,7 @@ func statsCmd(args []string) int {
 		for entries, err := range c.Stats(ctx, box, !*noStream) {
 			if err != nil {
 				if ctx.Err() != nil {
-					return 0
+					return exitInterrupt // Ctrl+C, like run
 				}
 				fmt.Fprintln(os.Stderr, "tsbox:", err)
 				return 1
@@ -277,7 +285,7 @@ func statsCmd(args []string) int {
 			}
 			statsTable(os.Stdout, entries)
 		}
-		return 0
+		return interrupted(ctx)
 	})
 }
 
@@ -305,7 +313,11 @@ func statsTable(out io.Writer, entries []client.StatsEntry) {
 			if s.State == tsbox.ScriptRunning || s.State == tsbox.ScriptReady {
 				up = since(s.Started)
 			}
-			fmt.Fprintf(w, "\t%s\t%s\t%s / %s\t%.1f%%\t%d\t%d\t%s\n", s.Name, s.State, human(st.RSS), limit, st.CPUCores*100,
+			rss := "-" // not measurable, e.g. under gVisor (the processes live in the sandbox)
+			if st.RSS > 0 {
+				rss = human(st.RSS)
+			}
+			fmt.Fprintf(w, "\t%s\t%s\t%s / %s\t%.1f%%\t%d\t%d\t%s\n", s.Name, s.State, rss, limit, st.CPUCores*100,
 				st.Threads, s.Restarts, up)
 		}
 	}
@@ -402,7 +414,7 @@ func eventsCmd(args []string) int {
 		for ev, err := range c.Events(ctx, from, *box) {
 			if err != nil {
 				if ctx.Err() != nil {
-					return 0
+					return exitInterrupt // Ctrl+C, like run
 				}
 				fmt.Fprintln(os.Stderr, "tsbox:", err)
 				return 1
@@ -414,7 +426,7 @@ func eventsCmd(args []string) int {
 			}
 			fmt.Println(formatEvent(ev))
 		}
-		return 0
+		return interrupted(ctx)
 	})
 }
 
@@ -444,4 +456,12 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// interrupted is the exit code at the end of a following command: 130 after Ctrl+C, otherwise 0.
+func interrupted(ctx context.Context) int {
+	if ctx.Err() != nil {
+		return exitInterrupt
+	}
+	return 0
 }

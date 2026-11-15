@@ -28,12 +28,16 @@ type Limits struct {
 	PIDs        int     `json:"pids"` // processes and threads (cgroup pids counts threads)
 }
 
+// MinCPU is the smallest CPU limit of a box (cores).
+const MinCPU = 0.1
+
 func (l Limits) Validate() error {
 	switch {
 	case l.MemoryBytes < 32<<20:
 		return fmt.Errorf("box memory %s is below the minimum of 32Mi", FormatBytes(l.MemoryBytes))
-	case l.CPUCores <= 0 || l.CPUCores > 64:
-		return fmt.Errorf("box CPU must be more than 0 and at most 64 cores (got %g)", l.CPUCores)
+	case l.CPUCores < MinCPU || l.CPUCores > 64:
+		// Below MinCPU, gVisor and Firecracker do not even start the box in time ("tsbox-init does not report in").
+		return fmt.Errorf("box CPU must be between %g and 64 cores (got %g)", MinCPU, l.CPUCores)
 	case l.PIDs < 8 || l.PIDs > 4096:
 		return fmt.Errorf("box PIDs must be between 8 and 4096 (got %d)", l.PIDs)
 	}

@@ -118,3 +118,29 @@ func FuzzScalars(f *testing.F) {
 		}
 	})
 }
+
+// TestLoadBOM: tsbox.json written by PowerShell 5.1 (UTF-8 with BOM, UTF-16 LE) loads; ANSI is refused with
+// a hint.
+func TestLoadBOM(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "a.ts", "console.log(1)")
+	const doc = `{"boxes":{"a":{"scripts":{"m":{"entry":"a.ts"}}}}}`
+	utf16 := []byte{0xFF, 0xFE}
+	for _, r := range doc {
+		utf16 = append(utf16, byte(r), 0)
+	}
+	for name, raw := range map[string][]byte{"bom.json": append([]byte{0xEF, 0xBB, 0xBF}, doc...), "u16.json": utf16} {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(p); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	p := filepath.Join(dir, "ansi.json")
+	os.WriteFile(p, []byte(`{"name":"`+"\xfc"+`","boxes":{}}`), 0o644)
+	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "not UTF-8") {
+		t.Errorf("ANSI: %v", err)
+	}
+}

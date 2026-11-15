@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/rif223/tsbox"
 	"github.com/rif223/tsbox/internal/denobin"
+	"github.com/rif223/tsbox/internal/fsutil"
 	"github.com/rif223/tsbox/internal/providers/extproc"
 	"github.com/rif223/tsbox/internal/sdkreg"
 	"github.com/rif223/tsbox/internal/sdktest"
@@ -38,20 +41,24 @@ func check(args []string) int {
 	}
 	uses, err := sf.uses()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "tsbox:", err)
-		return exitTsboxError
+		return usagef("%v", err)
+	}
+	if st, err := os.Stat(entry); err == nil && st.IsDir() {
+		return usagef("%s is a directory, not a script", entry)
+	} else if err != nil {
+		return usagef("%s", notFound(entry))
 	}
 	ctx := context.Background()
 	e, err := tsbox.New(ctx, tsbox.WithDriver("dev"))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "tsbox:", err)
-		return exitTsboxError
+		return failf("%v", err)
 	}
 	defer e.Close(ctx)
 	hashes, err := e.Check(ctx, tsbox.BoxSpec{Name: "check", SDKs: uses,
 		Scripts: []tsbox.ScriptSpec{{Name: "main", Entry: entry}}})
 	if err != nil {
-		return printBuildErr(err)
+		printBuildErr(err)
+		return 1
 	}
 	fmt.Printf("ok  %s  sha256:%s\n", entry, hashes["main"])
 	return 0
@@ -63,13 +70,13 @@ func types(args []string) int {
 	fs := flag.NewFlagSet("types", flag.ContinueOnError)
 	dir := fs.String("dir", ".", "project directory")
 	var sf sdkFlags
-	sf.register(fs)
+	fs.Var(&sf.sdks, "sdk", "SDK whose types to add (name or path; repeatable)")
 	usageFor(fs, "types [--dir .] [--sdk ...]")
 	if _, ok := parsePos(fs, args, 0, 0); !ok {
 		return 2
 	}
 	if st, err := os.Stat(*dir); err != nil || !st.IsDir() {
-		return failf("--dir %s: not an existing directory", *dir)
+		return usagef("--dir %s: not an existing directory", *dir)
 	}
 	reg := registry()
 	out := filepath.Join(*dir, ".tsbox", "types")
@@ -93,19 +100,32 @@ func types(args []string) int {
 	}
 	cfgPath := filepath.Join(*dir, "deno.json")
 	cfg := map[string]any{}
-	if b, err := os.ReadFile(cfgPath); err == nil {
+	if b, err := fsutil.ReadText(cfgPath); errors.Is(err, fsutil.ErrNotUTF8) {
+		return failf("%s is %v", cfgPath, err)
+	} else if err == nil {
 		if err := json.Unmarshal(b, &cfg); err != nil {
-			return failf("%s is not valid JSON (tsbox cannot update files with comments): %v", cfgPath, err)
+			if bytes.Contains(b, []byte("//")) || bytes.Contains(b, []byte("/*")) {
+				return failf("%s is not plain JSON (tsbox cannot update files with comments): %v", cfgPath, err)
+			}
+			return failf("%s is not valid JSON: %v", cfgPath, err)
 		}
 	}
 	existing, _ := cfg["imports"].(map[string]any)
 	if existing == nil {
 		existing = map[string]any{}
 	}
+	var dropped []string
 	for k, v := range existing {
 		if strings.HasPrefix(fmt.Sprint(v), "./.tsbox/types/") {
 			delete(existing, k) // replace old tsbox entries
+			if _, again := imports[k]; !again {
+				dropped = append(dropped, k)
+			}
 		}
+	}
+	if len(dropped) > 0 {
+		sort.Strings(dropped)
+		fmt.Fprintf(os.Stderr, "tsbox: removed from deno.json (not given with --sdk): %s\n", strings.Join(dropped, ", "))
 	}
 	for k, v := range imports {
 		if old, ok := existing[k]; ok {
@@ -131,9 +151,16 @@ func types(args []string) int {
 	return 0
 }
 
+// failf reports a failed sdk, check or types command (exit 1).
 func failf(format string, a ...any) int {
 	fmt.Fprintf(os.Stderr, "tsbox: "+format+"\n", a...)
-	return exitTsboxError
+	return 1
+}
+
+// usagef reports wrong input (exit 2, as for unknown flags).
+func usagef(format string, a ...any) int {
+	fmt.Fprintf(os.Stderr, "tsbox: "+format+"\n", a...)
+	return 2
 }
 
 func writeEmbedded(fsys fs.FS, root, dst string) error {
@@ -166,7 +193,7 @@ func copyTS(src, dst string) error {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(p, ".ts") && d.Name() != manifest.FileName {
+		if !strings.HasSuffix(p, ".ts") && d.Name() != manifest.FileName || d.Type()&(fs.ModeNamedPipe|fs.ModeSocket|fs.ModeDevice|fs.ModeCharDevice|fs.ModeIrregular) != 0 {
 			return nil
 		}
 		b, err := os.ReadFile(p)
@@ -223,6 +250,9 @@ func sdkCmd(args []string) int {
 		pos, ok = parsePos(fs, args[1:], 1, 1)
 	default:
 		msg := fmt.Sprintf("tsbox sdk: unknown command %q", sub)
+		if sug := closest(sub, []string{"ls", "info", "add", "rm", "init", "test"}); sug != "" {
+			msg += fmt.Sprintf(" (did you mean %q?)", sug)
+		}
 		fmt.Fprint(os.Stderr, msg+"\n"+help)
 		return 2
 	}
@@ -413,7 +443,8 @@ func sdkTest(args []string) int {
 	b, err := e.Run(ctx, tsbox.BoxSpec{Name: "sdk-test-" + m.Name, SDKs: uses, Storage: "sdk-test",
 		Scripts: []tsbox.ScriptSpec{{Name: "example", Entry: example, Limits: tsbox.ScriptLimits{Timeout: time.Minute}}}})
 	if err != nil {
-		return printBuildErr(err)
+		printBuildErr(err)
+		return 1
 	}
 	st, err := b.Wait(ctx)
 	if err == nil {

@@ -1,4 +1,4 @@
-// Package fsutil contains file operations that need retries on Windows.
+// Package fsutil contains file operations that need care on Windows (retries, text encodings).
 package fsutil
 
 import (

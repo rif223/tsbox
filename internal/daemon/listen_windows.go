@@ -75,7 +75,7 @@ func lockState(stateDir string) (func(), error) {
 	h, err := syscall.CreateFile(p, syscall.GENERIC_READ|syscall.GENERIC_WRITE, 0, nil, syscall.OPEN_ALWAYS, syscall.FILE_ATTRIBUTE_NORMAL, 0)
 	if err != nil {
 		if err == syscall.Errno(32) { // ERROR_SHARING_VIOLATION
-			return nil, fmt.Errorf("already running for %s", stateDir)
+			return nil, fmt.Errorf("already running for %s (stop it with \"tsbox daemon stop\")", stateDir)
 		}
 		return nil, err
 	}

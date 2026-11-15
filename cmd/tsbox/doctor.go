@@ -43,7 +43,7 @@ func firstLine(b []byte) string {
 // doctor checks the environment and reports whether isolation is available.
 func doctorCmd(args []string) int {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	usageFor(fs, "doctor")
+	usageFor(fs, "doctor   (checks Deno, isolation, rootfs, tsboxd and its socket)")
 	if _, ok := parsePos(fs, args, 0, 0); !ok {
 		return 2
 	}
@@ -260,7 +260,7 @@ Documentation=https://github.com/rif223/tsbox
 After=local-fs.target
 
 [Service]
-ExecStart=%s daemon --system
+%sExecStart=%s daemon --system
 Restart=on-failure
 KillMode=mixed
 # When the host runs out of memory, the kernel hits boxes first (oom_score_adj 500), not tsboxd.
@@ -278,7 +278,8 @@ func setupCmd(args []string) int {
 	noRootfs := fs.Bool("no-rootfs", false, "do not build the rootfs")
 	noSystemd := fs.Bool("no-systemd", false, "no systemd unit")
 	withFC := fs.Bool("firecracker", false, "also install the firecracker binary and the guest kernel (optional driver)")
-	usageFor(fs, "setup [--dry-run] [--no-rootfs] [--no-systemd] [--firecracker]")
+	force := fs.Bool("force", false, "replace an existing systemd unit that differs")
+	usageFor(fs, "setup [--dry-run] [--no-rootfs] [--no-systemd] [--firecracker] [--force]")
 	if _, ok := parsePos(fs, args, 0, 0); !ok {
 		return 2
 	}
@@ -348,18 +349,44 @@ func setupCmd(args []string) int {
 			if err != nil {
 				return fail(err)
 			}
-			unit := fmt.Sprintf(systemdUnit, exe)
-			_ = step("write the systemd unit: /etc/systemd/system/tsboxd.service (ExecStart=" + exe + " daemon --system)")
-			if !*dry {
-				if err := os.WriteFile("/etc/systemd/system/tsboxd.service", []byte(unit), 0o644); err != nil {
-					return fail(err)
+			if exe, err = filepath.EvalSymlinks(exe); err != nil {
+				return fail(err)
+			}
+			// Settings from the environment that the daemon needs as well (setup used them above).
+			var env string
+			for _, k := range []string{"TSBOX_ROOTFS", "TSBOX_PROFILES"} {
+				if v := os.Getenv(k); v != "" {
+					env += fmt.Sprintf("Environment=%s=%s\n", k, v)
 				}
 			}
-			if err := step("reload systemd", "systemctl", "daemon-reload"); err != nil {
-				return fail(err)
-			}
-			if err := step("enable and start tsboxd", "systemctl", "enable", "--now", "tsboxd"); err != nil {
-				return fail(err)
+			unit := fmt.Sprintf(systemdUnit, env, exe)
+			const unitPath = "/etc/systemd/system/tsboxd.service"
+			old, _ := os.ReadFile(unitPath)
+			switch {
+			case string(old) == unit:
+				fmt.Println("== systemd unit up to date:", unitPath)
+			case old != nil && !*force:
+				fmt.Printf("== %s exists and differs (ExecStart=%s daemon --system would be written); kept, use --force to replace it\n", unitPath, exe)
+			default:
+				if !strings.HasPrefix(exe, "/usr/") && !strings.HasPrefix(exe, "/opt/") {
+					fmt.Printf("   note: the unit runs %s; install the binary first if this is a temporary copy (e.g. install -m 755 tsbox /usr/local/bin/)\n", exe)
+				}
+				_ = step("write the systemd unit: " + unitPath + " (ExecStart=" + exe + " daemon --system)")
+				if !*dry {
+					if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
+						return fail(err)
+					}
+				}
+				if err := step("reload systemd", "systemctl", "daemon-reload"); err != nil {
+					return fail(err)
+				}
+				if err := step("enable tsboxd", "systemctl", "enable", "tsboxd"); err != nil {
+					return fail(err)
+				}
+				// restart, not start: a running daemon would keep the old binary and settings.
+				if err := step("(re)start tsboxd", "systemctl", "restart", "tsboxd"); err != nil {
+					return fail(err)
+				}
 			}
 		}
 	}

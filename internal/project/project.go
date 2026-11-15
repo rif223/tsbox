@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/rif223/tsbox"
+	"github.com/rif223/tsbox/internal/fsutil"
 )
 
 // FileName is the default name of the project file.
@@ -111,7 +112,7 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 	}
 	v, err := time.ParseDuration(str)
 	if err != nil {
-		return err
+		return fmt.Errorf("invalid duration %q (a number with a unit, e.g. 500ms, 30s, 5m)", str)
 	}
 	*d = Duration{Duration: v, Set: true}
 	return nil
@@ -188,6 +189,9 @@ func Load(path string) (*Project, error) {
 	if err != nil {
 		return nil, err
 	}
+	if raw, err = fsutil.DecodeText(raw); err != nil {
+		return nil, fmt.Errorf("%s is %w", path, err)
+	}
 	p, err := Parse(raw, filepath.Dir(abs))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -228,7 +232,7 @@ func Parse(raw []byte, dir string) (*Project, error) {
 		}
 		spec, err := f.Boxes[k].spec(name+"-"+k, dir)
 		if err != nil {
-			return nil, fmt.Errorf("Box %q: %w", k, err)
+			return nil, fmt.Errorf("box %q: %w", k, err)
 		}
 		h, err := hashSpec(spec)
 		if err != nil {
@@ -297,7 +301,7 @@ func (b Box) spec(name, dir string) (tsbox.BoxSpec, error) {
 		if sc.Restart != "" {
 			p, err := ParseRestart(sc.Restart)
 			if err != nil {
-				return s, fmt.Errorf("Script %q: %w", n, err)
+				return s, fmt.Errorf("script %q: %w", n, err)
 			}
 			ss.Restart = &p
 		}
@@ -310,8 +314,10 @@ func (b Box) spec(name, dir string) (tsbox.BoxSpec, error) {
 				}
 			}
 		}
-		if _, err := os.Stat(ss.Entry); err != nil {
-			return s, fmt.Errorf("Script %q: %w", n, err)
+		if st, err := os.Stat(ss.Entry); err != nil {
+			return s, fmt.Errorf("script %q: entry %s not found", n, sc.Entry)
+		} else if st.IsDir() {
+			return s, fmt.Errorf("script %q: entry %s is a directory, not a script", n, sc.Entry)
 		}
 		s.Scripts = append(s.Scripts, ss)
 	}
@@ -383,8 +389,9 @@ func hashSpec(s tsbox.BoxSpec) (string, error) {
 			if n++; n > 5000 {
 				return filepath.SkipAll
 			}
-			info, err := e.Info()
-			if err != nil || info.Size() > 1<<20 {
+			// os.Stat follows symlinks; FIFOs and devices are skipped (reading them can block).
+			info, err := os.Stat(p)
+			if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
 				return nil
 			}
 			data, err := os.ReadFile(p)
@@ -430,6 +437,12 @@ func jsonErr(raw []byte, off int64, err error) error {
 		return errors.New("invalid JSON: the file ends too early (missing } or \"?)")
 	}
 	msg := strings.TrimPrefix(err.Error(), "json: ")
+	if se != nil {
+		msg = "invalid JSON: " + strings.Replace(msg, "invalid character", "unexpected character", 1)
+		if strings.Contains(msg, "looking for beginning of object key") {
+			msg += " (a comma before } or ]?)"
+		}
+	}
 	return fmt.Errorf("%s (%s)", msg, position(raw, off))
 }
 

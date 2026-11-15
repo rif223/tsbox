@@ -33,7 +33,7 @@ import (
 // additional input. A hit counts only if the artifact is still in the store and all additional inputs are
 // unchanged.
 
-const cacheVersion = "tsbox-build-cache-2"
+const cacheVersion = "tsbox-build-cache-4" // 4: inline source maps (stack traces with file and line)
 
 // Limits for the context: larger directories are not hashed (and not cached).
 var (
@@ -44,8 +44,9 @@ var (
 // errTooBig: context above the limits, no cache.
 var errTooBig = errors.New("build context too large for the cache")
 
-// hashTree writes the paths (relative, with /) and contents of all files under dir into h. Symlinks count
-// with their target (deno follows them).
+// hashTree writes the paths (relative, with /) and contents of all regular files under dir into h. Symlinks
+// count with their target (deno follows them). FIFOs, sockets and devices are skipped: opening or reading
+// them can block forever (a FIFO without a writer, /dev/tty) or never end (/dev/zero).
 func hashTree(h io.Writer, dir string, files *int, size *int64) error {
 	return filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -61,12 +62,16 @@ func hashTree(h io.Writer, dir string, files *int, size *int64) error {
 		if *files > maxCacheFiles {
 			return errTooBig
 		}
-		if d.Type()&fs.ModeSymlink != 0 {
+		switch {
+		case d.Type()&fs.ModeSymlink != 0:
 			t, _ := os.Readlink(p)
 			fmt.Fprintf(h, "l\x00%s\x00%s\x00", rel, t)
-			if st, err := os.Stat(p); err != nil || st.IsDir() {
+			if st, err := os.Stat(p); err != nil || !st.Mode().IsRegular() {
 				return nil // WalkDir does not follow directory links; deno only follows file links
 			}
+		case !d.Type().IsRegular():
+			fmt.Fprintf(h, "s\x00%s\x00%s\x00", rel, d.Type())
+			return nil
 		}
 		f, err := os.Open(p)
 		if err != nil {

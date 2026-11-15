@@ -70,7 +70,7 @@ func bundleSandbox(ctx context.Context, o Options, src, coreDir string) (Artifac
 	}
 	out, diag, err := o.Runner(ctx, Invocation{Mounts: mounts, Args: []string{
 		"bundle", "--quiet", "--no-config", "--import-map", boxWork + "/import_map.json", "--no-lock", "--no-remote",
-		"--no-npm", "--check", "--platform", "deno", boxWork + "/entry.ts",
+		"--no-npm", "--check", "--platform", "deno", "--sourcemap=inline", boxWork + "/entry.ts",
 	}})
 	if err != nil {
 		text := ansi.ReplaceAllString(string(diag), "")
@@ -83,5 +83,12 @@ func bundleSandbox(ctx context.Context, o Options, src, coreDir string) (Artifac
 	if len(out) == 0 {
 		return Artifact{}, fmt.Errorf("build sandbox returned no bundle: %s", diag)
 	}
+	// Sources are relative to the working directory boxWork: box paths such as file:///src/main.ts.
+	out = fixSourceMap(out, func(s string) string {
+		if strings.Contains(s, "://") {
+			return s
+		}
+		return "file://" + path.Join(boxWork, s)
+	})
 	return Store(o.StoreDir, out)
 }

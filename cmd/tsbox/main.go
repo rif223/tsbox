@@ -19,12 +19,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/rif223/tsbox"
 	"github.com/rif223/tsbox/client"
 	"github.com/rif223/tsbox/internal/build"
+	"github.com/rif223/tsbox/internal/fsutil"
 	"github.com/rif223/tsbox/internal/project"
 	"github.com/rif223/tsbox/internal/sdkreg"
 	"github.com/rif223/tsbox/manifest"
@@ -68,9 +70,25 @@ func main() {
 		code = doctorCmd(os.Args[2:])
 	case "setup":
 		code = setupCmd(os.Args[2:])
-	case "version", "--version":
+	case "version", "--version", "-v":
+		if len(os.Args) > 2 {
+			fmt.Fprintf(os.Stderr, "tsbox version: takes no arguments (got %q)\n", strings.Join(os.Args[2:], " "))
+			os.Exit(2)
+		}
 		fmt.Println("tsbox", tsbox.Version, "(SDK-API", manifest.APIVersion+")")
 	case "help", "-h", "--help":
+		if len(os.Args) > 2 && os.Args[1] == "help" { // "tsbox help run" = "tsbox run -h"
+			cmd := os.Args[2]
+			switch {
+			case !slices.Contains(commands, cmd):
+				fmt.Fprintf(os.Stderr, "tsbox help: unknown command %q\nRun \"tsbox help\" to see all commands.\n", cmd)
+				os.Exit(2)
+			case cmd != "help" && cmd != "version":
+				os.Args = []string{os.Args[0], cmd, "-h"}
+				main()
+				return
+			}
+		}
 		usage(os.Stdout)
 	default:
 		msg := fmt.Sprintf("tsbox: unknown command %q", os.Args[1])
@@ -99,7 +117,7 @@ Commands:
   inspect <box>                  specification and status (without secrets)
   events [--since]               follow events
   up [-d] / down                 start / remove a project from tsbox.json
-  daemon                         tsboxd in the foreground (otherwise the CLI starts it on demand)
+  daemon [stop]                  tsboxd in the foreground (otherwise the CLI starts it on demand) / end it
   doctor / setup                 check the environment / set it up on Linux (rootfs, systemd)
   check <script.ts> [--sdk ...]  type check and build with the given SDKs, without starting
   types [--sdk ...]              types for the editor (deno.json + .tsbox/types)
@@ -193,20 +211,20 @@ const (
 func run(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	name := fs.String("name", "", "name of the box (default: from the file name)")
-	mem := fs.String("mem", "128Mi", "RAM of the box (e.g. 128Mi, 1Gi)")
-	cpu := fs.Float64("cpu", 0.5, "CPU cores of the box")
+	mem := fs.String("mem", "128Mi", "RAM of the box, at least 32Mi (e.g. 128Mi, 1Gi)")
+	cpu := fs.Float64("cpu", 0.5, "CPU cores of the box (0.1 to 64)")
 	startCPU := fs.Float64("start-cpu", 0, "CPU cores at start until all scripts are ready (at most 30 s; 0 = no boost)")
-	pids := fs.Int("pids", 64, "processes and threads of the box")
+	pids := fs.Int("pids", 64, "processes and threads of the box (8 to 4096)")
 	heap := fs.String("heap", "64Mi", "V8 heap of the script")
 	rss := fs.String("rss", "0", "private memory of the script (0 = only the box limit)")
 	threads := fs.Int("threads", 32, "threads of the script")
 	timeout := fs.Duration("timeout", 0, "run time limit (e.g. 30s; 0 = unlimited)")
 	watchdog := fs.Duration("watchdog", 10*time.Second, "end a blocked event loop after (0 = off)")
 	restart := fs.String("restart", "no", "restart policy: no | on-failure[:max] | always")
-	drv := fs.String("driver", "auto", "check the driver: auto | gvisor | firecracker | dev (tsboxd chooses it)")
+	drv := fs.String("driver", "auto", "fail unless tsboxd uses this driver: auto | gvisor | firecracker | dev")
 	detach := fs.Bool("d", false, "start in the background (tsboxd), print the box name")
 	autoRm := fs.Bool("rm", false, "with -d: remove the box after it ends")
-	rootfs := fs.String("rootfs", "", "deprecated: the rootfs applies to tsboxd (TSBOX_ROOTFS)")
+	rootfs := fs.String("rootfs", "", "not supported: the rootfs is set for tsboxd (TSBOX_ROOTFS or tsbox daemon --rootfs)")
 	params := fs.String("params", "", "JSON parameters for the script (not secret)")
 	paramsFile := fs.String("params-file", "", "file with the JSON parameters (instead of --params)")
 	quiet := fs.Bool("q", false, "no status messages from tsbox (the warning about missing isolation stays)")
@@ -223,33 +241,37 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "tsbox: "+format+"\n", a...)
 		return exitTsboxError
 	}
+	bad := func(format string, a ...any) int { // wrong input, found before tsboxd is asked: exit 2
+		fmt.Fprintf(os.Stderr, "tsbox run: "+format+"\n", a...)
+		return 2
+	}
 	switch *drv {
 	case "auto", "gvisor", "firecracker", "dev":
 	default:
-		return fail("--driver %q: allowed are auto, gvisor, firecracker and dev", *drv)
+		return bad("--driver %q: allowed are auto, gvisor, firecracker and dev", *drv)
 	}
 	if *timeout < 0 {
-		return fail("--timeout %s: must not be negative (0 = unlimited)", *timeout)
+		return bad("--timeout %s: must not be negative (0 = unlimited)", *timeout)
 	}
 	if *watchdog < 0 {
-		return fail("--watchdog %s: must not be negative (0 = off)", *watchdog)
+		return bad("--watchdog %s: must not be negative (0 = off)", *watchdog)
 	}
 	if st, err := os.Stat(entry); err == nil && st.IsDir() {
-		return fail("%s is a directory, not a script", entry)
+		return bad("%s is a directory, not a script", entry)
 	} else if err != nil {
-		return fail("%s", notFound(entry))
+		return bad("%s", notFound(entry))
 	}
 	limits := tsbox.Limits{CPU: *cpu, PIDs: *pids, StartCPU: *startCPU}
 	var sl tsbox.ScriptLimits
 	var err error
 	if limits.Memory, err = parseBytes(*mem); err != nil {
-		return fail("--mem: %v", err)
+		return bad("--mem: %v", err)
 	}
 	if sl.Heap, err = parseBytes(*heap); err != nil {
-		return fail("--heap: %v", err)
+		return bad("--heap: %v", err)
 	}
 	if sl.RSS, err = parseBytes(*rss); err != nil {
-		return fail("--rss: %v", err)
+		return bad("--rss: %v", err)
 	}
 	sl.Threads, sl.Timeout, sl.Watchdog = *threads, *timeout, *watchdog
 	if *watchdog == 0 {
@@ -257,18 +279,20 @@ func run(args []string) int {
 	}
 	policy, err := parseRestart(*restart)
 	if err != nil {
-		return fail("--restart: %v", err)
+		return bad("--restart: %v", err)
 	}
 	if *paramsFile != "" {
 		if *params != "" {
-			return fail("--params and --params-file exclude each other")
+			return bad("--params and --params-file exclude each other")
 		}
-		b, err := os.ReadFile(*paramsFile)
-		if err != nil {
-			return fail("--params-file: %v", err)
+		b, err := fsutil.ReadText(*paramsFile)
+		if errors.Is(err, fsutil.ErrNotUTF8) {
+			return bad("--params-file: %s is %v", *paramsFile, err)
+		} else if err != nil {
+			return bad("--params-file: %v", err)
 		}
 		if !jsonValid(string(b)) {
-			return fail("--params-file: %s is not valid JSON", *paramsFile)
+			return bad("--params-file: %s is not valid JSON", *paramsFile)
 		}
 		*params = strings.TrimSpace(string(b))
 	}
@@ -279,7 +303,7 @@ func run(args []string) int {
 			if runtime.GOOS == "windows" && !strings.Contains(*params, `"`) {
 				msg += "\n  (the shell removed the quotes: in PowerShell write '{\\\"n\\\":600}', in cmd \"{\\\"n\\\":600}\", or use --params-file)"
 			}
-			return fail("%s", msg)
+			return bad("%s", msg)
 		}
 		rawParams = []byte(*params)
 	}
@@ -291,7 +315,7 @@ func run(args []string) int {
 	}
 	uses, err := sf.uses()
 	if err != nil {
-		return fail("%v", err)
+		return bad("%v", err)
 	}
 
 	if entry, err = filepath.Abs(entry); err != nil {
@@ -301,6 +325,9 @@ func run(args []string) int {
 	spec := tsbox.BoxSpec{
 		Name: *name, Limits: limits, Restart: policy, SDKs: uses, Storage: *storage, Profile: *prof,
 		Scripts: []tsbox.ScriptSpec{{Name: "main", Entry: entry, Limits: sl, Params: rawParams}},
+	}
+	if err := spec.Validate(); err != nil {
+		return bad("%s", flagNames.Replace(err.Error()))
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -329,7 +356,16 @@ func run(args []string) int {
 	}
 	var final *tsbox.BoxStatus
 	exitShown := false // the last script end was already reported as an event
+	// The first build (type check, under gVisor also the build sandbox) can take many seconds: say so
+	// instead of staying silent.
+	slow := time.AfterFunc(3*time.Second, func() {
+		if !*quiet {
+			fmt.Fprintln(os.Stderr, "tsbox: building and starting the box ...")
+		}
+	})
+	defer slow.Stop()
 	for m, err := range c.Attach(ctx, req) {
+		slow.Stop()
 		if err != nil {
 			if ctx.Err() != nil {
 				break
@@ -362,6 +398,12 @@ func run(args []string) int {
 	return exitCode(*final, *quiet || exitShown)
 }
 
+// flagNames turns the engine's words for limits into the flags of tsbox run.
+var flagNames = strings.NewReplacer(
+	"box memory", "--mem", "box CPU", "--cpu", "box PIDs", "--pids", "start CPU", "--start-cpu",
+	`script "main": heap`, "--heap", `script "main": threads`, "--threads",
+	"invalid box name", "--name: invalid box name", "invalid storage area", "--storage: invalid storage area")
+
 // absRefs makes local SDK paths and file: secrets absolute (the daemon has a different working directory).
 func absRefs(uses []tsbox.SDKUse) {
 	for i := range uses {
@@ -383,7 +425,10 @@ func absRefs(uses []tsbox.SDKUse) {
 // checkDriver checks --driver/--rootfs against the daemon (it uses exactly one driver).
 func checkDriver(info client.Info, drv, rootfs string) error {
 	if drv != "" && drv != "auto" && drv != info.Driver {
-		return fmt.Errorf("tsboxd uses the driver %q, not %q (start tsboxd with TSBOX_DRIVER=%s or \"tsbox daemon --driver %s\")", info.Driver, drv, drv, drv)
+		if info.Mode == "system" {
+			return fmt.Errorf("tsboxd uses the driver %q, not %q (system daemon: change TSBOX_DRIVER in its systemd unit)", info.Driver, drv)
+		}
+		return fmt.Errorf("tsboxd uses the driver %q, not %q (\"tsbox daemon stop\", then run again with TSBOX_DRIVER=%s)", info.Driver, drv, drv)
 	}
 	if rootfs != "" {
 		return errors.New("--rootfs applies to tsboxd: set TSBOX_ROOTFS or use \"tsbox daemon --rootfs ...\"")
@@ -454,7 +499,11 @@ func printEvent(ev tsbox.Event) bool {
 	case tsbox.EventCircuitOpen:
 		fmt.Fprintf(os.Stderr, "tsbox: %s is no longer restarted (%s)\n", ev.Script, ev.Detail)
 	case tsbox.EventBoxQuarantined:
-		fmt.Fprintf(os.Stderr, "tsbox: box quarantined: %s\n", ev.Detail)
+		if strings.HasPrefix(ev.Detail, "memory limit of the box reached") {
+			fmt.Fprintf(os.Stderr, "tsbox: %s (raise --mem)\n", ev.Detail) // the script end already says "oom"
+		} else {
+			fmt.Fprintf(os.Stderr, "tsbox: box quarantined: %s\n", ev.Detail)
+		}
 	case tsbox.EventScriptExited:
 		if ev.Exit != nil && ev.Exit.Reason.Failure() && ev.Exit.Reason != tsbox.ReasonCrash {
 			fmt.Fprintln(os.Stderr, endMessage(ev.Script, ev.Exit.Reason, ev.Exit.Detail))

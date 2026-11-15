@@ -72,12 +72,12 @@ export class Transport {
     globalThis.addEventListener("unhandledrejection", (e) => {
       e.preventDefault();
       Deno.exitCode = 1;
-      this.log("error", "Unhandled promise rejection: " + formatError(e.reason));
+      this.log("error", "Uncaught (in promise) " + formatError(e.reason));
     });
     globalThis.addEventListener("error", (e) => {
       e.preventDefault();
       Deno.exitCode = 1;
-      this.log("error", "Unhandled error: " + formatError(e.error ?? e.message));
+      this.log("error", "Uncaught " + formatError(e.error ?? e.message));
     });
     // Heartbeat: if it stops, the event loop is blocked (watchdog in tsbox-init).
     Deno.unrefTimer(setInterval(() => this.send({ t: "alive" }), ALIVE_INTERVAL_MS));

@@ -73,6 +73,10 @@ func removeTemp(dir string) {
 	fmt.Fprintf(os.Stderr, "test directory stays: %v\n", err)
 }
 
+// noMeasurement: the dev driver on macOS measures neither RAM nor RSS nor threads (README, limits table), so
+// these limits do not apply there.
+func noMeasurement() bool { return runtime.GOOS == "darwin" && driverName() == "dev" }
+
 func driverName() string {
 	if d := os.Getenv("TSBOX_TEST_DRIVER"); d != "" {
 		return d
@@ -265,6 +269,9 @@ func TestLimits(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.entry, func(t *testing.T) {
+			if c.want == ReasonRSS && noMeasurement() {
+				t.Skip("no RSS measurement with the dev driver on macOS")
+			}
 			spec := one(t, c.entry, func(s *BoxSpec) { s.Limits = c.box; s.Scripts[0].Limits = c.limits })
 			ex := lastExit(t, runToEnd(t, e, spec, 90*time.Second))
 			if ex.Reason != c.want {
@@ -279,6 +286,9 @@ func TestLimits(t *testing.T) {
 func TestThreads(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("threads per script are not enforced on Windows")
+	}
+	if noMeasurement() {
+		t.Skip("no thread measurement with the dev driver on macOS")
 	}
 	e, rec := newEngine(t)
 	spec := one(t, "attack/threads.ts", func(s *BoxSpec) {
@@ -297,6 +307,9 @@ func TestThreads(t *testing.T) {
 
 // TestBoxOOM: box memory full ⇒ reason oom (dev: the whole box; gVisor: the largest script).
 func TestBoxOOM(t *testing.T) {
+	if noMeasurement() {
+		t.Skip("no RAM watchdog with the dev driver on macOS")
+	}
 	e, rec := newEngine(t)
 	spec := one(t, "attack/rss.ts", func(s *BoxSpec) { s.Limits.Memory = 192 << 20 })
 	ex := lastExit(t, runToEnd(t, e, spec, 90*time.Second))
@@ -385,8 +398,8 @@ func TestIdentityAndStop(t *testing.T) {
 	if err != nil || len(stats.Scripts) != 2 {
 		t.Fatalf("Stats: %v %+v", err, stats)
 	}
-	// init sends the first measurement right after the start (not only after up to 5 s).
-	for measured := time.Now(); ; time.Sleep(100 * time.Millisecond) {
+	// init sends the first measurement right after the start (not only after up to 5 s); macOS dev measures nothing.
+	for measured := time.Now(); !noMeasurement(); time.Sleep(100 * time.Millisecond) {
 		stats, _ = b.Stats(context.Background())
 		if s := stats.Scripts; s[0].RSS+int64(s[0].Threads) > 0 && s[1].RSS+int64(s[1].Threads) > 0 {
 			break

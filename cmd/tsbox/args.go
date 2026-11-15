@@ -214,10 +214,19 @@ func editDistance(a, b string) int {
 var commands = []string{"run", "ps", "logs", "stats", "stop", "start", "restart", "rm", "inspect", "events",
 	"up", "down", "daemon", "doctor", "setup", "check", "types", "sdk", "version", "help"}
 
-// suggestCmd finds a command close to an unknown one.
+// suggestCmd finds a command close to an unknown one (none for flags like "-x": they are no misspelled
+// commands).
 func suggestCmd(name string) string {
+	if strings.HasPrefix(name, "-") {
+		return ""
+	}
+	return closest(name, commands)
+}
+
+// closest returns the candidate within edit distance 2 of name ("" if none).
+func closest(name string, candidates []string) string {
 	best, bestD := "", 3
-	for _, c := range commands {
+	for _, c := range candidates {
 		if d := editDistance(name, c); d < bestD {
 			best, bestD = c, d
 		}

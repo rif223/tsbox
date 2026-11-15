@@ -75,7 +75,7 @@ type Error struct {
 }
 
 func (e *Error) Error() string {
-	s := "build failed:\n" + strings.TrimSpace(e.Output)
+	s := "build failed:\n" + strings.TrimSpace(denoNoise.ReplaceAllString(e.Output, ""))
 	if e.Hint != "" {
 		s += "\n\nhint: " + e.Hint
 	}
@@ -85,7 +85,10 @@ func (e *Error) Error() string {
 var (
 	ansi       = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 	remoteHint = regexp.MustCompile(`(?i)(jsr:|npm:|npm specifiers|https?://|remote module|Do not know how to load path|--allow-import|import access)`)
-	bareHint   = regexp.MustCompile(`Import "([^"]+)" not a dependency|Relative import path "([^"]+)" not prefixed`)
+	// denoNoise are Deno's advice lines that do not apply to tsbox (no --no-check, no deno add, a script
+	// with type errors does not run).
+	denoNoise = regexp.MustCompile(`(?m)^[ \t]*(info: The program failed type-checking, but it still might work correctly\.|hint: Re-run with --no-check to skip type-checking\.|hint: If you want to use a JSR or npm package, try running .*)\r?\n?`)
+	bareHint  = regexp.MustCompile(`Import "([^"]+)" not a dependency|Relative import path "([^"]+)" not prefixed`)
 )
 
 // Bundle builds src (or takes the artifact from the build cache, cache.go) and puts it into the store.
@@ -173,7 +176,7 @@ func bundle(ctx context.Context, o Options, src string) (Artifact, error) {
 	defer cancel()
 	out := filepath.Join(tmp, "out.js")
 	cmd := exec.CommandContext(ctx, o.Deno, "bundle", "--quiet", "--no-config", "--import-map", cfgPath, "--no-lock",
-		"--no-remote", "--no-npm", "--check", "--platform", "deno", "-o", out, entry)
+		"--no-remote", "--no-npm", "--check", "--platform", "deno", "--sourcemap=inline", "-o", out, entry)
 	cmd.Env = append(os.Environ(), "NO_COLOR=1")
 	var diag bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &diag, &diag
@@ -193,6 +196,17 @@ func bundle(ctx context.Context, o Options, src string) (Artifact, error) {
 	if err != nil {
 		return Artifact{}, err
 	}
+	// Sources are relative to out.js in the random directory tmp: make them absolute (dev runs on the host).
+	b = fixSourceMap(b, func(s string) string {
+		if strings.Contains(s, "://") {
+			return s
+		}
+		p := filepath.Join(tmp, filepath.FromSlash(s))
+		if r, err := filepath.Rel(tmp, p); err == nil && !strings.HasPrefix(r, "..") {
+			return "entry.ts" // the generated entry: no random path in the artifact
+		}
+		return fileURL(p)
+	})
 	return Store(o.StoreDir, b)
 }
 

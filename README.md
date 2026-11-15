@@ -61,6 +61,7 @@ tsbox inspect bot                                    # JSON without secret value
 tsbox events --since 1h
 tsbox up -d · tsbox down                             # project from tsbox.json (several boxes)
 tsbox doctor                                         # runsc, cgroup v2, rootfs, Deno, daemon, isolation?
+tsbox daemon stop                                    # end the autostarted daemon (e.g. to switch TSBOX_DRIVER)
 ```
 
 `tsbox.json` describes boxes with scripts, SDKs, grants and limits (format:
@@ -80,8 +81,12 @@ tsbox run <script.ts> [--mem 128Mi] [--cpu 0.5] [--pids 64] [--start-cpu 0] box
 | the script's code | regular end (`Deno.exit(n)`; unhandled error ⇒ 1) |
 | 137 | limit exceeded: `rss`, `threads`, `heap`, `oom`, `watchdog`, `timeout` |
 | 126 | `integrity` (artifact changed) or `protocol` (invalid bytes on stdout) |
-| 125 | error of tsbox (build, start, configuration) |
+| 125 | error of tsbox or tsboxd (build, start) |
+| 2 | wrong input: unknown flag, invalid value, missing script (also for all other commands) |
 | 130 | Ctrl+C |
+
+Errors in the script show the file and line of the source (the bundle carries a source map). Files for
+`--params-file` and `tsbox.json` may be UTF-8 with or without BOM or UTF-16 (PowerShell `Out-File`).
 
 A script ends by itself as soon as its event loop is empty. Whoever wants to run permanently uses `keepAlive()`
 or subscribes to events.

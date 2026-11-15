@@ -192,12 +192,24 @@ func (r *Registry) Add(src string) (*SDK, error) {
 		cmd := exec.Command("git", append(args, url, tmp)...)
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("git clone %s: %v\n%s", url, err, out)
+			msg := strings.TrimSpace(string(out))
+			if i := strings.LastIndex(msg, "\n"); i >= 0 {
+				msg = strings.TrimSpace(msg[i+1:]) // git ends with the actual reason ("fatal: ...")
+			}
+			if msg == "" {
+				msg = err.Error()
+			}
+			return nil, fmt.Errorf("git clone %s failed: %s", url, msg)
 		}
 		_ = os.RemoveAll(filepath.Join(tmp, ".git"))
 		dir = tmp
-	} else if abs, err := filepath.Abs(src); err == nil {
-		src = abs
+	} else {
+		if slices.Contains(sdks.Names, src) {
+			return nil, fmt.Errorf("SDK %q is bundled with tsbox; there is nothing to install (use --sdk %s)", src, src)
+		}
+		if abs, err := filepath.Abs(src); err == nil {
+			src = abs
+		}
 	}
 	s, err := load(dir, src)
 	if err != nil {

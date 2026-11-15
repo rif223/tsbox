@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,23 +24,42 @@ import (
 // defaultIdle is the idle time after which an autostarted daemon exits.
 const defaultIdle = 5 * time.Minute
 
-// daemonCmd: tsbox daemon [--system] [--socket] [--idle] (tsboxd).
+// daemonCmd: tsbox daemon [--system] [--socket] [--idle] (tsboxd), tsbox daemon stop [-f].
 func daemonCmd(args []string) int {
+	if len(args) > 0 && args[0] == "stop" {
+		return daemonStop(args[1:])
+	}
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	system := fs.Bool("system", false, "system daemon (Linux, root): socket "+client.SystemSocket+" for the group --group")
 	socket := fs.String("socket", "", "path of the socket (default: system or user socket)")
 	group := fs.String("group", "tsbox", "group with access to the system socket (corresponds to the docker group)")
 	idle := fs.Duration("idle", 0, "exit after this much idle time (0 = never)")
 	auto := fs.Bool("autostarted", false, "started by the CLI (internal)")
-	drv := fs.String("driver", envOr("TSBOX_DRIVER", "auto"), "driver: auto | gvisor | firecracker | dev (default: TSBOX_DRIVER)")
+	drv := fs.String("driver", envOr("TSBOX_DRIVER", "auto"), "driver: auto | gvisor | firecracker | dev (TSBOX_DRIVER sets the default)")
 	fcJailer := fs.String("fc-jailer", "", "firecracker: run every VMM under the jailer (path, or 1 = jailer from PATH; default: TSBOX_FC_JAILER)")
 	fcKernel := fs.String("fc-kernel", "", "guest kernel of the firecracker driver (default: TSBOX_FC_KERNEL or "+tsbox.DefaultFirecrackerKernel+")")
 	rootfs := fs.String("rootfs", "", "rootfs for gVisor (profile default; default: TSBOX_ROOTFS)")
 	profiles := fs.String("profiles", "", "directory of named profiles (default: TSBOX_PROFILES or /var/lib/tsbox/profiles)")
 	platform := fs.String("platform", "", "gVisor platform: systrap | kvm (default: TSBOX_PLATFORM or systrap)")
 	oomAdj := fs.Int("oom-score-adj", tsbox.DefaultOOMScoreAdj, "oom_score_adj of the box processes (Linux; 0 = unchanged)")
-	usageFor(fs, "daemon [flags]   (tsboxd: local API for ps, logs, stats, ...)")
+	usageFor(fs, "daemon [flags] | daemon stop [-f]   (tsboxd: local API for ps, logs, stats, ...)")
 	if _, ok := parsePos(fs, args, 0, 0); !ok {
+		return 2
+	}
+	switch *drv {
+	case "auto", "gvisor", "firecracker", "dev":
+	default:
+		fmt.Fprintf(os.Stderr, "tsbox daemon: --driver %q: allowed are auto, gvisor, firecracker and dev\n", *drv)
+		return 2
+	}
+	if runtime.GOOS == "windows" && *socket != "" && !strings.HasPrefix(*socket, `\\.\pipe\`) {
+		fmt.Fprintf(os.Stderr, "tsbox daemon: --socket %s: on Windows a named pipe is expected, e.g. \\\\.\\pipe\\tsboxd-test\n", *socket)
+		return 2
+	}
+	switch *platform {
+	case "", "systrap", "kvm":
+	default:
+		fmt.Fprintf(os.Stderr, "tsbox daemon: --platform %q: allowed are systrap and kvm\n", *platform)
 		return 2
 	}
 	if *system && runtime.GOOS != "linux" {
@@ -120,11 +140,21 @@ func connect(ctx context.Context) (*client.Client, client.Info, error) {
 		}
 	}
 	if !autostartAllowed() {
-		return nil, client.Info{}, fmt.Errorf("tsboxd not reachable%s. Start it with \"tsbox daemon\" or \"systemctl start tsboxd\" (autostart is off)", hint)
+		start := `"tsbox daemon"`
+		if runtime.GOOS == "linux" {
+			start += ` or "systemctl start tsboxd"`
+		}
+		return nil, client.Info{}, fmt.Errorf("tsboxd not reachable%s. Start it with %s (autostart is off)", hint, start)
 	}
 	host := hosts[len(hosts)-1]
 	sock, _ := client.SocketPath(host)
-	if err := spawnDaemon(sock); err != nil {
+	logPath := filepath.Join(tsbox.DefaultStateDir(), "tsboxd.log")
+	var logStart int64
+	if st, err := os.Stat(logPath); err == nil {
+		logStart = st.Size()
+	}
+	exited, err := spawnDaemon(sock)
+	if err != nil {
 		return nil, client.Info{}, fmt.Errorf("starting tsboxd: %w", err)
 	}
 	c, _ := client.New(host)
@@ -134,12 +164,74 @@ func connect(ctx context.Context) (*client.Client, client.Info, error) {
 		if err == nil {
 			return c, info, nil
 		}
+		select {
+		case <-exited: // the daemon ended without answering: show why
+			if msg := lastLogLine(logPath, logStart); msg != "" {
+				return nil, client.Info{}, errors.New(msg)
+			}
+			return nil, client.Info{}, fmt.Errorf("tsboxd ended right after the start; see %s", logPath)
+		default:
+		}
 		if time.Now().After(deadline) || ctx.Err() != nil {
-			log := filepath.Join(tsbox.DefaultStateDir(), "tsboxd.log")
-			return nil, client.Info{}, fmt.Errorf("tsboxd does not answer (%v); see %s", err, log)
+			return nil, client.Info{}, fmt.Errorf("tsboxd does not answer (%v); see %s", err, logPath)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// lastLogLine returns the last non-empty line written to the log after offset (the error of a daemon that
+// could not start, e.g. "tsboxd: gvisor: runsc not found ...").
+func lastLogLine(path string, offset int64) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	if int64(len(b)) < offset { // truncated at the start (log above 10 MiB)
+		offset = 0
+	}
+	lines := strings.Split(strings.TrimSpace(string(b[offset:])), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
+}
+
+// daemonStop: tsbox daemon stop [-f] ends the user daemon (the system daemon belongs to systemd).
+func daemonStop(args []string) int {
+	fs := flag.NewFlagSet("daemon stop", flag.ContinueOnError)
+	force := fs.Bool("f", false, "also with running boxes (they are stopped)")
+	usageFor(fs, "daemon stop [-f]")
+	if _, ok := parsePos(fs, args, 0, 0); !ok {
+		return 2
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	for _, h := range client.Hosts() {
+		c, err := client.New(h)
+		if err != nil {
+			continue
+		}
+		info, err := ping(ctx, c)
+		if err != nil {
+			c.Close()
+			continue
+		}
+		defer c.Close()
+		if info.Mode == "system" {
+			fmt.Fprintln(os.Stderr, "tsbox: the system daemon is managed by systemd: systemctl stop tsboxd")
+			return 1
+		}
+		if info.Running > 0 && !*force {
+			fmt.Fprintf(os.Stderr, "tsbox: %d box(es) running; stop them first or use \"tsbox daemon stop -f\"\n", info.Running)
+			return 1
+		}
+		if err := c.Shutdown(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, "tsbox:", err)
+			return 1
+		}
+		waitGone(ctx, c)
+		fmt.Printf("tsboxd stopped (PID %d)\n", info.PID)
+		return 0
+	}
+	fmt.Println("tsboxd is not running")
+	return 0
 }
 
 func autostartAllowed() bool {
@@ -161,15 +253,16 @@ func waitGone(ctx context.Context, c *client.Client) {
 	}
 }
 
-// spawnDaemon starts "tsbox daemon --autostarted" detached; output to <state>/tsboxd.log.
-func spawnDaemon(sock string) error {
+// spawnDaemon starts "tsbox daemon --autostarted" detached; output to <state>/tsboxd.log. The channel is
+// closed when the daemon process ends (only relevant while the CLI waits for it).
+func spawnDaemon(sock string) (<-chan struct{}, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	state := tsbox.DefaultStateDir()
 	if err := os.MkdirAll(state, 0o755); err != nil {
-		return err
+		return nil, err
 	}
 	logPath := filepath.Join(state, "tsboxd.log")
 	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
@@ -178,7 +271,7 @@ func spawnDaemon(sock string) error {
 	}
 	lf, err := os.OpenFile(logPath, flags, 0o600)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer lf.Close()
 	idle := defaultIdle
@@ -194,9 +287,14 @@ func spawnDaemon(sock string) error {
 		return cmd
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return cmd.Process.Release()
+	exited := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(exited)
+	}()
+	return exited, nil
 }
 
 // releaseSDK asks every reachable tsboxd (without starting one) to end the provider processes of an installed

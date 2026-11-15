@@ -83,7 +83,8 @@ tsbox inspect <box> …                          # JSON without secret values
 tsbox events [--since] [--box] [--json]
 tsbox up [-d] [-f tsbox.json] | down [-f tsbox.json]
 tsbox daemon [--system] [--socket] [--idle 0] [--driver] [--rootfs] [--profiles] [--platform systrap|kvm] [--fc-kernel] [--fc-jailer] [--oom-score-adj 500] [--group tsbox]   # tsboxd
-tsbox doctor | setup [--dry-run] [--no-rootfs] [--no-systemd]
+tsbox daemon stop [-f]                   # end the user daemon (-f: also with running boxes)
+tsbox doctor | setup [--dry-run] [--no-rootfs] [--no-systemd] [--firecracker] [--force]
 tsbox check <script.ts> [--sdk …]       # build with type checking and SDK checks, without starting
 tsbox types [--sdk …]                   # deno.json + .tsbox/types for the editor
 tsbox sdk ls | info <sdk> | add <path|git+url#ref> | rm <name> | init <name> [--provider deno|go] | test <path>
@@ -96,7 +97,8 @@ daemon. If none answers, it starts `tsbox daemon --autostarted --idle 5m` detach
 `<state>/tsboxd.log`); it exits after 5 min without a running box and without a connection (`TSBOX_IDLE`).
 `TSBOX_NO_AUTOSTART=1` turns this off. An autostarted daemon of a different build is replaced as long as no box
 is running. The daemon chooses driver and rootfs (`TSBOX_DRIVER`, `TSBOX_ROOTFS`); `run --driver` only checks
-that it matches.
+that it matches; to switch, `tsbox daemon stop` and start again with another `TSBOX_DRIVER`. If an autostarted
+daemon ends right away (e.g. `runsc` missing), the CLI shows its error at once instead of waiting.
 
 | Address | Linux/macOS | Windows |
 |---|---|---|
@@ -131,10 +133,16 @@ After a restart of the daemon, `tsbox start` passes them again.
 
 `up` creates missing boxes, recreates changed ones (label `tsbox.spec-hash` over specification and sources) and
 removes boxes that are no longer in the file. Without `-d` it follows the logs, Ctrl+C stops the boxes. `down`
-removes all boxes of the project (kv data stays).
+removes all boxes of the project (kv data stays). The project name defaults to the directory name; the label
+`tsbox.project-dir` records the directory, so `up` and `down` refuse to touch boxes of another directory with the
+same project name (give one of them its own `"name"`).
 
 **Exit codes of `run`:** the script's code; 137 for limits (`rss`, `threads`, `heap`, `oom`, `watchdog`,
-`timeout`); 126 for `integrity`/`protocol`; 125 for errors of tsbox; 130 for Ctrl+C.
+`timeout`); 126 for `integrity`/`protocol`; 125 for errors of tsbox or tsboxd (build, start); 2 for wrong input
+(unknown command or flag, invalid value, missing script); 130 for Ctrl+C.
+
+**Exit codes of the other commands:** 0 success; 1 failure (box not found, build failed in `check`, tsboxd not
+reachable, ...); 2 wrong input; 130 for Ctrl+C in `logs -f`, `stats`, `events` and `up`.
 
 ## 4. Go API
 

@@ -263,8 +263,21 @@ func TestRunExitCodes(t *testing.T) {
 	if out, errs, code := c.run("run", "-q", "--params-file", pf, "testdata/scripts/ticker.ts"); code != 0 || !strings.Contains(out, "tick 2") {
 		t.Fatalf("params-file: %d %q %q", code, out, errs)
 	}
-	if _, errs, code := c.run("run", "--params", "{n:2}", "testdata/scripts/ticker.ts"); code != 125 || !strings.Contains(errs, "not valid JSON: {n:2}") {
+	if _, errs, code := c.run("run", "--params", "{n:2}", "testdata/scripts/ticker.ts"); code != 2 || !strings.Contains(errs, "not valid JSON: {n:2}") {
 		t.Fatalf("bad params: %d %q", code, errs)
+	}
+	// Files from PowerShell 5.1: UTF-8 with BOM.
+	os.WriteFile(pf, append([]byte{0xEF, 0xBB, 0xBF}, `{"n":1}`...), 0o644)
+	if out, errs, code := c.run("run", "-q", "--params-file", pf, "testdata/scripts/ticker.ts"); code != 0 || !strings.Contains(out, "tick 1") {
+		t.Fatalf("params-file with BOM: %d %q %q", code, out, errs)
+	}
+	// Wrong values are found before tsboxd is asked: exit 2, named by flag.
+	if _, errs, code := c.run("run", "--cpu", "0.01", "examples/hello.ts"); code != 2 || !strings.Contains(errs, "--cpu must be between") {
+		t.Fatalf("--cpu 0.01: %d %q", code, errs)
+	}
+	// Stack traces point to the source (inline source map), not to the bundle.
+	if _, errs, _ := c.run("run", "-q", "testdata/scripts/throw.ts"); !strings.Contains(errs, "throw.ts:1:7") {
+		t.Fatalf("stack trace without the source position: %q", errs)
 	}
 	bad := filepath.Join(t.TempDir(), "broken.ts")
 	os.WriteFile(bad, []byte("const x: number = \"text\";\n"), 0o644)
@@ -465,7 +478,10 @@ func TestAutostartIdleAndPerms(t *testing.T) {
 	}
 	if runtime.GOOS == "windows" {
 		sid, _ := client.CurrentUserSID()
-		if perm != "D:P(A;;FA;;;"+sid+")" {
+		// SDDL writes some well-known accounts as aliases, e.g. the built-in administrator (RID 500, the
+		// user of the GitHub runners) as "LA".
+		alias := map[bool]string{true: "LA"}[strings.HasSuffix(sid, "-500")]
+		if perm != "D:P(A;;FA;;;"+sid+")" && (alias == "" || perm != "D:P(A;;FA;;;"+alias+")") {
 			t.Fatalf("DACL of the pipe: %s", perm)
 		}
 	} else if !strings.HasPrefix(perm, "0600 ") {
@@ -525,6 +541,16 @@ func TestUpDown(t *testing.T) {
 		t.Fatalf("up after change: %s", out)
 	}
 	c.waitState("demo-one", tsbox.BoxRunning)
+	// Another directory with the same project name must neither take over nor remove these boxes.
+	dir2 := t.TempDir()
+	os.WriteFile(filepath.Join(dir2, "tsbox.json"), []byte(`{"name":"demo","boxes":{"one":{"scripts":{"a":{"entry":"a.ts"}}}}}`), 0o644)
+	os.WriteFile(filepath.Join(dir2, "a.ts"), src, 0o644)
+	file2 := filepath.Join(dir2, "tsbox.json")
+	for _, args := range [][]string{{"up", "-d", "-f", file2}, {"down", "-f", file2}} {
+		if _, errs, code := c.run(args...); code != 1 || !strings.Contains(errs, "already used by") {
+			t.Fatalf("%s of a foreign project: %d %s", args[0], code, errs)
+		}
+	}
 	if out := c.ok("down", "-f", file); strings.Count(out, "removed") != 2 {
 		t.Fatalf("down: %s", out)
 	}

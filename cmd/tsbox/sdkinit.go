@@ -23,7 +23,7 @@ func sdkInit(args []string) int {
 		return 2
 	}
 	if !sdkName.MatchString(name) {
-		return failf("invalid SDK name %q (a-z, 0-9, -, at most 32 characters)", name)
+		return usagef("invalid SDK name %q (a-z, 0-9, -, at most 32 characters)", name)
 	}
 	dir := filepath.Join(*parent, name)
 	if _, err := os.Stat(dir); err == nil {
@@ -43,7 +43,7 @@ func sdkInit(args []string) int {
 		files["provider/main.go"] = tmplGoProvider
 		files["provider/go.mod"] = "module NAME-provider\n\ngo 1.24\n"
 	default:
-		return failf("--provider %q: allowed are deno and go", *provider)
+		return usagef("--provider %q: allowed are deno and go", *provider)
 	}
 	imp := "@sdk/" + name
 	for rel, content := range files {
@@ -63,11 +63,24 @@ func sdkInit(args []string) int {
 		if runtime.GOOS == "windows" {
 			bin = "provider.exe" // Windows starts only files with an .exe extension
 		}
-		fmt.Printf("  go build -C %s -o %s .\n", filepath.Join(dir, "provider"), bin)
+		fmt.Printf("  go build -C %s -o %s .\n", hintPath(filepath.Join(dir, "provider")), bin)
 	}
 	fmt.Printf("  tsbox sdk test %s --grant %s:greeting=Hello\n  tsbox run %s --sdk %s\n",
-		dir, name, filepath.Join(dir, "example.ts"), dir)
+		hintPath(dir), name, hintPath(filepath.Join(dir, "example.ts")), hintPath(dir))
 	return 0
+}
+
+// hintPath writes a path for a command to copy: with / (works in PowerShell, cmd and Git Bash), relative
+// paths with "./" (a bare "greet" would be read as an SDK name by --sdk), in quotes if it has spaces.
+func hintPath(p string) string {
+	p = filepath.ToSlash(p)
+	if !filepath.IsAbs(p) && !strings.HasPrefix(p, "./") && !strings.HasPrefix(p, "../") && p != "." {
+		p = "./" + p
+	}
+	if strings.ContainsAny(p, " \t&;|()<>'`$") {
+		p = `"` + p + `"`
+	}
+	return p
 }
 
 const tmplManifest = `{

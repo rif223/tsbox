@@ -116,4 +116,5 @@ const (
 	LabelProject  = "tsbox.project"
 	LabelService  = "tsbox.box"
 	LabelSpecHash = "tsbox.spec-hash"
+	LabelDir      = "tsbox.project-dir" // directory of the project file (two projects with the same name)
 )
