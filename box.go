@@ -684,16 +684,6 @@ func (b *Box) markHung() {
 // boxEnded cleans up after the sandbox has ended.
 func (b *Box) boxEnded(drv driver.Box, gen int) {
 	err := drv.Err()
-	// If the kernel's OOM killer hit the sandbox itself (not only a script inside), the box just "dies".
-	// The cgroup still counts the kill until Close: then it is the box memory limit, not an unknown death.
-	var oomKills int
-	if err == nil || !errors.Is(err, driver.ErrBoxOOM) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		if st, serr := drv.Stats(ctx); serr == nil {
-			oomKills = st.OOMKills
-		}
-		cancel()
-	}
 	_ = drv.Close()
 	b.mu.Lock()
 	if b.gen != gen {
@@ -713,10 +703,6 @@ func (b *Box) boxEnded(drv driver.Box, gen int) {
 		reason = ReasonOOM
 		b.errMsg = err.Error()
 		b.e.emit(Event{At: now, Kind: EventOOM, Box: b.spec.Name, Detail: err.Error()})
-	case oomKills > b.oomSeen && !b.stopping:
-		reason = ReasonOOM
-		b.errMsg = driver.ErrBoxOOM.Error() + " (the kernel ended the sandbox)"
-		b.e.emit(Event{At: now, Kind: EventOOM, Box: b.spec.Name, Detail: b.errMsg})
 	}
 	for _, s := range b.scripts {
 		s.endRunLocked()

@@ -133,3 +133,13 @@ func SetCPU(dir string, cpuCores float64) error {
 	}
 	return nil
 }
+
+// OOMKills returns oom_kill from memory.events of dir. The value is hierarchical: it includes the kills in
+// all child cgroups, also of children that no longer exist (0 if the file cannot be read).
+func OOMKills(dir string) int {
+	ev, err := readKV(dir, "memory.events")
+	if err != nil {
+		return 0
+	}
+	return int(ev["oom_kill"])
+}

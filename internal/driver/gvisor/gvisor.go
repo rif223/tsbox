@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/rif223/tsbox/internal/driver"
@@ -95,9 +96,10 @@ func (d *Driver) globalFlags() []string {
 
 type box struct {
 	*driver.Process
-	d     *Driver
-	id    string
-	cgDir string
+	d       *Driver
+	id      string
+	cgDir   string
+	oomBase int // oom_kill of the parent cgroup at the start (Err)
 }
 
 func (d *Driver) Start(ctx context.Context, spec driver.Spec) (driver.Box, error) {
@@ -128,6 +130,7 @@ func (d *Driver) Start(ctx context.Context, spec driver.Spec) (driver.Box, error
 	_ = exec.Command(d.cfg.Runsc, append(d.globalFlags(), "delete", "-force", spec.ID)...).Run()
 
 	bx := &box{d: d, id: spec.ID, cgDir: filepath.Join(cgroup.Root, d.cfg.CgroupParent, spec.ID)}
+	bx.oomBase = cgroup.OOMKills(filepath.Dir(bx.cgDir))
 	cleanup := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -259,3 +262,25 @@ func (d *Driver) Platform() string { return d.cfg.Platform }
 
 // SetCPU sets the box's cpu.max anew.
 func (b *box) SetCPU(cores float64) error { return cgroup.SetCPU(b.cgDir, cores) }
+
+// Err reports the end of the sandbox. If the kernel's OOM killer ended it with SIGKILL, that is the box
+// memory limit: with the kvm platform there are no systrap stubs, the sentry is the only and therefore the
+// chosen victim (seen in the CI: "Killed process ... (gvisor_sentry)"). runsc removes the box's cgroup right
+// away, so the kill is read from the parent's hierarchical counter (another box ending by OOM at the same
+// moment could be counted as well; then both are OOM ends anyway).
+func (b *box) Err() error {
+	err := b.Process.Err()
+	var ee *exec.ExitError
+	if err == nil || !errors.As(err, &ee) || ee.ExitCode() != 137 && !killed(ee) {
+		return err
+	}
+	if cgroup.OOMKills(filepath.Dir(b.cgDir)) > b.oomBase {
+		return fmt.Errorf("%w (the kernel ended the sandbox: %v)", driver.ErrBoxOOM, err)
+	}
+	return err
+}
+
+func killed(ee *exec.ExitError) bool {
+	ws, ok := ee.Sys().(syscall.WaitStatus)
+	return ok && ws.Signaled() && ws.Signal() == syscall.SIGKILL
+}
