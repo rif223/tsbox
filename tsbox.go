@@ -19,8 +19,10 @@ import (
 	"github.com/rif223/tsbox/internal/initbox"
 )
 
-// Version of tsbox.
-const Version = "0.1.0-dev"
+// Version of tsbox. Release builds set it from the tag:
+//
+//	go build -ldflags "-X github.com/rif223/tsbox.Version=0.1.0" ./cmd/tsbox
+var Version = "0.1.0-dev"
 
 // Init runs the internal roles of the binary (tsbox-init in the box, UID switch, test probe) and then
 // exits the process. Otherwise it returns immediately. Must be at the beginning of main.

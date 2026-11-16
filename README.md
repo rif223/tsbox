@@ -14,10 +14,30 @@ Run TypeScript (Deno) in isolation – like Docker, but for scripts.
 
 ## Install
 
-Needs Go (version from `go.mod`) and [Deno](https://deno.com) 2.9 (`deno` in `PATH` or `TSBOX_DENO`).
+Needs [Deno](https://deno.com) 2.9 (`deno` in `PATH` or `TSBOX_DENO`).
+
+**Prebuilt binaries** for Linux, Windows and macOS (amd64, arm64) are on the
+[releases page](https://github.com/rif223/tsbox/releases), with `SHA256SUMS`:
+
+```bash
+# Linux amd64 (other systems: pick the matching archive; Windows: .zip)
+V=0.1.0
+curl -fLO "https://github.com/rif223/tsbox/releases/download/v$V/tsbox_${V}_linux_amd64.tar.gz"
+curl -fLO "https://github.com/rif223/tsbox/releases/download/v$V/SHA256SUMS"
+sha256sum --check --ignore-missing SHA256SUMS
+tar -xzf "tsbox_${V}_linux_amd64.tar.gz"
+sudo install -m 755 "tsbox_${V}_linux_amd64/tsbox" /usr/local/bin/
+```
+
+**From source** (Go, version from `go.mod`):
 
 ```bash
 CGO_ENABLED=0 go install github.com/rif223/tsbox/cmd/tsbox@latest
+```
+
+**Then:**
+
+```bash
 sudo tsbox setup                       # Linux: rootfs, group tsbox, systemd unit (optional)
 sudo tsbox setup --firecracker         # Linux with KVM: additionally Firecracker, jailer, guest kernel
 tsbox doctor                           # what is available, which driver isolates

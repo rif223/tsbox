@@ -27,6 +27,13 @@ bash scripts/fuzz.sh                             # all fuzz targets
   UTF-8 in pipes)
 - user-visible changes are described in the docs (`README.md`, `docs/`)
 
+## Releases
+
+A tag `v<version>` on `main` starts `.github/workflows/release.yml`: checks, `scripts/release.sh <version>`
+(static binaries for Linux, Windows, macOS on amd64 and arm64, archives and `SHA256SUMS`) and a GitHub release
+with generated notes. Tags with a `-` (e.g. `v0.2.0-rc.1`) become pre-releases. Locally:
+`bash scripts/release.sh 0.1.0` writes the same files into `dist/`.
+
 ## Layout
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (§9, project structure). [docs/NOTES.md](docs/NOTES.md)

@@ -6,3 +6,4 @@
 .tsbox/
 # compiled Go test binaries
 *.test
+/dist/

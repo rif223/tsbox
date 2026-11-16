@@ -1,0 +1,37 @@
+name: release
+
+# A tag v<version> (e.g. v0.1.0) builds the archives with scripts/release.sh and publishes a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Checks
+        run: |
+          test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+          go vet ./...
+          go test -count=1 ./internal/... ./manifest/... ./client/... ./sdk/...
+      - name: Build
+        run: bash scripts/release.sh "${GITHUB_REF_NAME}"
+      - name: Smoke test
+        run: |
+          tar -xzf "dist/tsbox_${GITHUB_REF_NAME#v}_linux_amd64.tar.gz" -C /tmp
+          /tmp/tsbox_${GITHUB_REF_NAME#v}_linux_amd64/tsbox version | tee /dev/stderr | grep -q "tsbox ${GITHUB_REF_NAME#v} "
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.zip dist/SHA256SUMS \
+            --verify-tag --title "tsbox $GITHUB_REF_NAME" --generate-notes $prerelease
