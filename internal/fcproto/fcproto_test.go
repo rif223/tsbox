@@ -112,3 +112,14 @@ func TestMessages(t *testing.T) {
 		t.Fatal("truncated result accepted")
 	}
 }
+
+func TestTreeSize(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.js"), []byte("AAAA"), 0o644)
+	os.MkdirAll(filepath.Join(dir, "sub"), 0o755)
+	os.WriteFile(filepath.Join(dir, "sub", "b.js"), []byte("BB"), 0o644)
+	b, n, err := TreeSize(dir)
+	if err != nil || b != 6 || n != 4 { // root, a.js, sub, sub/b.js
+		t.Fatalf("TreeSize: %d bytes, %d entries, %v", b, n, err)
+	}
+}

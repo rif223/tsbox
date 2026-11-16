@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newFS() *flag.FlagSet {
@@ -139,5 +140,20 @@ func TestHintPath(t *testing.T) {
 	abs, _ := filepath.Abs("x y")
 	if got := hintPath(abs); got != `"`+filepath.ToSlash(abs)+`"` {
 		t.Errorf("absolute: %q", got)
+	}
+}
+
+func TestSecondsFlag(t *testing.T) {
+	for in, want := range map[string]time.Duration{"10": 10 * time.Second, "0": 0, "1500ms": 1500 * time.Millisecond, "2m": 2 * time.Minute} {
+		var s seconds
+		if err := s.Set(in); err != nil || time.Duration(s) != want {
+			t.Errorf("%q: %v %v", in, time.Duration(s), err)
+		}
+	}
+	for _, in := range []string{"x", "-1", "-5s", ""} {
+		var s seconds
+		if s.Set(in) == nil {
+			t.Errorf("%q accepted", in)
+		}
 	}
 }

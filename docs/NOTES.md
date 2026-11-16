@@ -141,8 +141,9 @@ bash scripts/fuzz.sh                                # all fuzz targets
   kv store, HTTP requests and host patterns, external provider frames, `lock.json`, daemon state and API requests,
   cgroup files, `/proc` parsers, NDJSON streams, the Go provider router, CLI flags. A finding:
   `ParseBytes("Inf")`, `"NaN"` and values from 2⁶³ gave negative sizes; they are rejected now.
-- **CI** (`.github/workflows/ci.yml`): Linux, Windows, macOS with the dev driver, fuzzing, a gVisor job and a
-  Firecracker job (only on runners with KVM).
+- **CI** (`.github/workflows/ci.yml`): Linux, Windows, macOS with the dev driver, fuzzing, a gVisor job (systrap,
+  plus kvm when the runner has `/dev/kvm`) and a Firecracker job (only on runners with KVM); all green since
+  2026-11-15. On failure the kvm step prints `dmesg` and runsc's debug logs (`TSBOX_RUNSC_DEBUG=<dir>`).
 
 ## 4. Platform pitfalls
 
@@ -160,13 +161,23 @@ bash scripts/fuzz.sh                                # all fuzz targets
 - **Firecracker CI images** (guest kernels, used by `tsbox setup --firecracker`) lag behind the releases;
   `setup` takes the newest minor version that has them.
 - **vsock** connects time out after 2 s by default; the guest raises the timeout to 10 s.
+- **gVisor with the kvm platform: box OOM.** Without systrap stubs the sentry is the only process in the box's
+  cgroup, so the host's OOM killer ends the whole sandbox (not the largest script as with systrap). runsc removes
+  the cgroup at once; the driver therefore reads `oom_kill` of the parent cgroup and reports `oom`.
+- **macOS: `/var` is a symlink** to `/private/var`; path checks compare resolved paths on both sides (found in
+  `fcproto.AddTree`).
+- **dev driver on macOS** measures no RAM, RSS or threads; those limits do not apply there (tests skip them).
+- **Firecracker build context:** the build VM gets the script's whole directory as files in a tmpfs (gVisor mounts
+  it instead). A script next to large data (found: a state directory of 364 MiB) broke the transfer with
+  "broken pipe"; the host now refuses contexts above 192 MiB with a clear message.
 
 ## 5. Known limits and open points
 
-1. The CI has not run on GitHub yet (gVisor and Firecracker jobs included); kvm, amd64 Linux and macOS are only
-   covered there.
-2. Firecracker ran only nested under Windows (AMD, WSL2); a run on Linux on hardware and on aarch64 is missing.
-3. Stack traces of scripts point to the bundled artifact (no source maps).
+1. Firecracker ran nested under Windows (AMD, WSL2) and on the GitHub runners (amd64 with KVM); a run on Linux
+   on hardware and on aarch64 is missing.
+2. kvm, amd64 Linux and macOS are only covered by the CI.
+3. With the dev driver on Linux, a script that grows very fast can end as `oom` (whole box) instead of `rss`: both
+   limits are polled, whichever notices first wins.
 4. Scripts of one box are one trust domain (under gVisor they see each other's `cmdline` and `status`).
 5. Side channels between boxes on one host are not addressed; there is no independent audit yet
    ([SECURITY.md](../SECURITY.md)).

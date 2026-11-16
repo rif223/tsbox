@@ -227,3 +227,36 @@ func CleanTarget(name string, roots []string) (string, string, error) {
 	}
 	return "", "", fmt.Errorf("fcproto: path %q outside %v", name, roots)
 }
+
+// TreeSize counts what AddTree would send for hostDir: the sum of the file sizes and the number of entries.
+func TreeSize(hostDir string) (bytes int64, files int, err error) {
+	root, err := filepath.Abs(hostDir)
+	if err != nil {
+		return 0, 0, err
+	}
+	realRoot := root
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		realRoot = r
+	}
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := os.Stat(p)
+		if err != nil {
+			return nil
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			target, err := filepath.EvalSymlinks(p)
+			if err != nil || !within(realRoot, target) || info.IsDir() {
+				return nil
+			}
+		}
+		files++
+		if info.Mode().IsRegular() {
+			bytes += info.Size()
+		}
+		return nil
+	})
+	return bytes, files, err
+}

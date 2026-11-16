@@ -23,6 +23,7 @@ import (
 //   - the bundle comes back over vsock
 const (
 	buildMemory  = 768 << 20
+	maxBuildTree = 192 << 20 // files sent to the build VM (in its tmpfs, next to Deno)
 	buildPIDs    = 256
 	buildTimeout = 2 * time.Minute
 )
@@ -45,6 +46,21 @@ func (d *Driver) SetInit(p string) { d.init = p }
 func (d *Driver) RunBuild(ctx context.Context, inv build.Invocation) ([]byte, []byte, error) {
 	if d.init == "" {
 		return nil, nil, errors.New("firecracker: no init binary for the build VM")
+	}
+	// The files land in a tmpfs of the build VM (buildMemory): a large script directory would otherwise break the
+	// transfer midway ("sending the files: broken pipe").
+	var size int64
+	var files int
+	for _, dir := range append([]string{d.BuildCacheDir()}, mountHosts(inv.Mounts)...) {
+		b, n, err := fcproto.TreeSize(dir)
+		if err != nil {
+			return nil, nil, err
+		}
+		size, files = size+b, files+n
+	}
+	if size > maxBuildTree || files > fcproto.MaxFiles {
+		return nil, nil, fmt.Errorf("the build context is too large for the Firecracker build VM (%d MiB in %d files; at most %d MiB and %d files): tsbox sends the whole directory of the script, so put the script into a directory of its own",
+			size>>20, files, maxBuildTree>>20, fcproto.MaxFiles)
 	}
 	img, err := d.image(ctx, d.cfg.RootFS, d.init)
 	if err != nil {
@@ -142,4 +158,12 @@ func (t *tail) suffix() string {
 		return ""
 	}
 	return "\nVM console:\n" + string(t.b)
+}
+
+func mountHosts(ms []build.Mount) []string {
+	out := make([]string, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, m.Host)
+	}
+	return out
 }

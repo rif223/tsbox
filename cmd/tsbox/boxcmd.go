@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -331,7 +332,7 @@ func lifecycleCmd(cmd string, args []string) int {
 	force := new(bool)
 	switch cmd {
 	case "stop", "restart":
-		fs.DurationVar(grace, "t", 0, "deadline for the scripts (default 5s)")
+		fs.Var((*seconds)(grace), "t", "deadline for the scripts, e.g. 10s or 10 (seconds; default 5s)")
 	case "rm":
 		fs.BoolVar(force, "f", false, "also running boxes (stop them first)")
 	}
@@ -464,4 +465,22 @@ func interrupted(ctx context.Context) int {
 		return exitInterrupt
 	}
 	return 0
+}
+
+// seconds is a duration flag that also takes a plain number of seconds (like docker stop -t 10).
+type seconds time.Duration
+
+func (s *seconds) String() string { return time.Duration(*s).String() }
+func (s *seconds) Get() any       { return time.Duration(*s) }
+func (s *seconds) Set(v string) error {
+	if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+		*s = seconds(time.Duration(n) * time.Second)
+		return nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 0 {
+		return errors.New("parse error")
+	}
+	*s = seconds(d)
+	return nil
 }

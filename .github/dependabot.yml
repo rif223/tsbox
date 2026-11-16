@@ -1,10 +1,17 @@
 version: 2
 updates:
+  # Monthly, one grouped pull request per ecosystem (instead of one per dependency and week).
   - package-ecosystem: gomod
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    groups:
+      go-modules:
+        patterns: ["*"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    groups:
+      github-actions:
+        patterns: ["*"]
