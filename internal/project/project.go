@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -23,6 +22,7 @@ import (
 
 	"github.com/rif223/tsbox"
 	"github.com/rif223/tsbox/internal/fsutil"
+	"github.com/rif223/tsbox/manifest"
 )
 
 // FileName is the default name of the project file.
@@ -120,25 +120,18 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 
 // ParseBytes understands 128Mi, 1Gi, 512Ki, 100M, 1G and plain byte counts.
 func ParseBytes(s string) (int64, error) {
-	orig := s
-	s = strings.TrimSpace(s)
-	units := []struct {
-		suffix string
-		mult   int64
-	}{{"Ki", 1 << 10}, {"Mi", 1 << 20}, {"Gi", 1 << 30}, {"KB", 1e3}, {"MB", 1e6}, {"GB", 1e9}, {"K", 1e3}, {"M", 1e6}, {"G", 1e9}, {"B", 1}}
-	mult := int64(1)
-	for _, u := range units {
-		if strings.HasSuffix(s, u.suffix) {
-			s, mult = strings.TrimSuffix(s, u.suffix), u.mult
+	t := strings.TrimSpace(s)
+	for _, u := range []string{"KB", "MB", "GB"} {
+		if strings.HasSuffix(t, u) { // decimal, like K, M, G
+			t = strings.TrimSuffix(t, "B")
 			break
 		}
 	}
-	v, err := strconv.ParseFloat(s, 64)
-	// NaN, Inf and values from 2^63 would turn into negative sizes when converted (fuzz finding).
-	if err != nil || !(v >= 0) || v*float64(mult) >= math.MaxInt64 {
-		return 0, fmt.Errorf("invalid size %q (examples: 128Mi, 1Gi)", orig)
+	v, err := manifest.ParseBytes(t)
+	if err != nil {
+		return 0, fmt.Errorf("invalid size %q (examples: 128Mi, 1Gi)", s)
 	}
-	return int64(v * float64(mult)), nil
+	return v, nil
 }
 
 // ParseRestart understands no | on-failure[:max] | always.

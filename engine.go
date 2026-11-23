@@ -374,14 +374,7 @@ func (e *Engine) Run(ctx context.Context, spec BoxSpec) (*Box, error) {
 
 // Create validates the specification and builds all scripts, but does not start the box yet.
 func (e *Engine) Create(ctx context.Context, spec BoxSpec) (*Box, error) {
-	spec, err := normalize(spec)
-	if err != nil {
-		return nil, err
-	}
-	if err := e.checkProfile(spec.Profile); err != nil {
-		return nil, err
-	}
-	active, imports, err := e.resolveSDKs(spec)
+	spec, active, imports, err := e.prepareSpec(spec)
 	if err != nil {
 		return nil, err
 	}
@@ -399,6 +392,19 @@ func (e *Engine) Create(ctx context.Context, spec BoxSpec) (*Box, error) {
 		return nil, err
 	}
 	return b, nil
+}
+
+// prepareSpec validates a specification and resolves its profile and SDKs.
+func (e *Engine) prepareSpec(spec BoxSpec) (BoxSpec, map[string]*activeSDK, map[string]string, error) {
+	spec, err := normalize(spec)
+	if err != nil {
+		return spec, nil, nil, err
+	}
+	if err := e.checkProfile(spec.Profile); err != nil {
+		return spec, nil, nil, err
+	}
+	active, imports, err := e.resolveSDKs(spec)
+	return spec, active, imports, err
 }
 
 func (e *Engine) forget(name string, b *Box) {
@@ -507,14 +513,7 @@ func (e *Engine) log(l LogLine) {
 // Check fully validates a box specification (SDKs, rights, configuration) and builds all scripts (with
 // type checking) without starting anything. Returns the artifact hashes per script.
 func (e *Engine) Check(ctx context.Context, spec BoxSpec) (map[string]string, error) {
-	spec, err := normalize(spec)
-	if err != nil {
-		return nil, err
-	}
-	if err := e.checkProfile(spec.Profile); err != nil {
-		return nil, err
-	}
-	active, imports, err := e.resolveSDKs(spec)
+	spec, active, imports, err := e.prepareSpec(spec)
 	if err != nil {
 		return nil, err
 	}

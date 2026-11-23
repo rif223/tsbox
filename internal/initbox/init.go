@@ -11,8 +11,6 @@ package initbox
 
 import (
 	"bufio"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -25,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rif223/tsbox/internal/fsutil"
 	"github.com/rif223/tsbox/internal/proto"
 )
 
@@ -173,7 +172,7 @@ func (s *initState) start(sid string, st proto.Start) {
 		s.mu.Unlock()
 	}
 	if len(st.DebugExec) == 0 {
-		if sum, err := fileSHA256(st.Artifact); err != nil || sum != st.SHA256 || len(st.SHA256) != 64 {
+		if sum, err := fsutil.FileSHA256(st.Artifact); err != nil || sum != st.SHA256 || len(st.SHA256) != 64 {
 			release()
 			s.exit(sid, proto.Exit{Code: -1, Reason: "integrity", Detail: "artifact does not match the build hash"})
 			return
@@ -293,19 +292,6 @@ func waitTimeout(wg *sync.WaitGroup, d time.Duration) {
 	case <-c:
 	case <-time.After(d):
 	}
-}
-
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // calibrate measures the VmRSS of an empty Deno process. Under gVisor VmRSS includes the mapped binary

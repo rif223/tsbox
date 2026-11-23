@@ -35,6 +35,7 @@ import (
 
 	"github.com/rif223/tsbox/internal/driver/cgroup"
 	"github.com/rif223/tsbox/internal/fcproto"
+	"github.com/rif223/tsbox/internal/fsutil"
 )
 
 const (
@@ -339,8 +340,8 @@ func runBuild(h fcproto.Header, setup *os.File, cg *os.File) error {
 	cmd.Env = append([]string{envPath}, h.Env...)
 	cmd.Dir = "/tmp"
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &limitWriter{w: &stdout, n: maxBuild}
-	cmd.Stderr = &limitWriter{w: &stderr, n: 1 << 20}
+	cmd.Stdout = &fsutil.LimitWriter{W: &stdout, N: maxBuild}
+	cmd.Stderr = &fsutil.LimitWriter{W: &stderr, N: 1 << 20}
 	cmd.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(cg.Fd()), Setsid: true}
 	res := fcproto.Result{}
 	if err := cmd.Start(); err != nil {
@@ -365,19 +366,6 @@ func runBuild(h fcproto.Header, setup *os.File, cg *os.File) error {
 	}
 	drain(setup, 30*time.Second)
 	return nil
-}
-
-type limitWriter struct {
-	w io.Writer
-	n int64
-}
-
-func (l *limitWriter) Write(p []byte) (int, error) {
-	if int64(len(p)) > l.n {
-		return 0, errors.New("output too large")
-	}
-	l.n -= int64(len(p))
-	return l.w.Write(p)
 }
 
 // dial connects to the host (CID 2) on port; Firecracker forwards it to the host socket "<uds>_<port>".

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -132,19 +133,6 @@ func cachePath(storeDir, key string) string { return filepath.Join(storeDir, "ca
 // input is an additional input (file outside the hashed directories) with its hash.
 type input struct{ sum, path string }
 
-func fileSum(p string) (string, error) {
-	f, err := os.Open(p)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
 // cacheGet returns the artifact of a key if it exists and all inputs are unchanged.
 func cacheGet(storeDir, key string) (Artifact, bool) {
 	b, err := os.ReadFile(cachePath(storeDir, key))
@@ -161,7 +149,7 @@ func cacheGet(storeDir, key string) (Artifact, bool) {
 		if !ok {
 			return Artifact{}, false
 		}
-		if got, err := fileSum(p); err != nil || got != want {
+		if got, err := fsutil.FileSHA256(p); err != nil || got != want {
 			return Artifact{}, false
 		}
 	}
@@ -224,7 +212,7 @@ func hostGraph(ctx context.Context, o Options, src, coreDir string, roots []stri
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, o.Deno, "info", "--json", "--no-config", "--import-map", cfgPath, "--no-lock",
-		"--no-remote", "--no-npm", fileURL(src)) // as a URL: deno reads a Windows path C:\… as scheme "c:"
+		"--no-remote", "--no-npm", FileURL(src)) // as a URL: deno reads a Windows path C:\… as scheme "c:"
 	cmd.Env = append(os.Environ(), "NO_COLOR=1")
 	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.Output()
@@ -251,7 +239,7 @@ func hostGraph(ctx context.Context, o Options, src, coreDir string, roots []stri
 			continue
 		}
 		seen[p] = true
-		sum, err := fileSum(p)
+		sum, err := fsutil.FileSHA256(p)
 		if err != nil {
 			return nil, false
 		}
@@ -262,10 +250,5 @@ func hostGraph(ctx context.Context, o Options, src, coreDir string, roots []stri
 }
 
 func within(p string, roots []string) bool {
-	for _, r := range roots {
-		if rel, err := filepath.Rel(r, p); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(roots, func(r string) bool { return fsutil.Within(r, p) })
 }

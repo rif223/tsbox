@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -16,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rif223/tsbox/internal/fsutil"
 	"github.com/rif223/tsbox/internal/profile"
 )
 
@@ -71,7 +71,7 @@ func (d *Driver) image(ctx context.Context, rootfs, initBin string) (string, err
 		ph = h
 		d.images.hashes[rootfs] = ph
 	}
-	ih, err := fileHash(initBin)
+	ih, err := fsutil.FileSHA256(initBin)
 	if err != nil {
 		return "", err
 	}
@@ -159,17 +159,4 @@ func treeSize(dir string) (int64, error) {
 		return nil
 	})
 	return total, err
-}
-
-func fileHash(p string) (string, error) {
-	f, err := os.Open(p)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }

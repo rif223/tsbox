@@ -120,15 +120,58 @@ After a restart of the daemon, `tsbox start` passes them again.
 **Project file `tsbox.json`** (strict, paths relative to the file, boxes are named `<project>-<box>`):
 
 ```json
-{ "name": "demo",
-  "boxes": { "bot": {
-      "limits": { "memory": "256Mi", "cpu": 0.5, "startCpu": 2, "pids": 64 }, "restart": "on-failure:5", "storage": "bot", "profile": "default",
-      "labels": { "team": "a" },
-      "sdks": { "kv": {}, "http": { "grants": { "host": ["api.github.com"] }, "config": { "token": "env:GITHUB_TOKEN" } },
-                "own": { "path": "./sdks/own" } },
-      "scripts": { "main": { "entry": "src/bot.ts", "params": { "x": 1 },
-                             "limits": { "heap": "64Mi", "rss": "96Mi", "threads": 32, "timeout": "0", "watchdog": "10s" } },
-                   "cron": { "entry": "src/cron.ts", "restart": "always" } } } } }
+{
+  "name": "demo",
+  "boxes": {
+    "bot": {
+      "limits": {
+        "memory": "256Mi",
+        "cpu": 0.5,
+        "startCpu": 2,
+        "pids": 64
+      },
+      "restart": "on-failure:5",
+      "storage": "bot",
+      "profile": "default",
+      "labels": {
+        "team": "a"
+      },
+      "sdks": {
+        "kv": {},
+        "http": {
+          "grants": {
+            "host": ["api.github.com"]
+          },
+          "config": {
+            "token": "env:GITHUB_TOKEN"
+          }
+        },
+        "own": {
+          "path": "./sdks/own"
+        }
+      },
+      "scripts": {
+        "main": {
+          "entry": "src/bot.ts",
+          "params": {
+            "x": 1
+          },
+          "limits": {
+            "heap": "64Mi",
+            "rss": "96Mi",
+            "threads": 32,
+            "timeout": "0",
+            "watchdog": "10s"
+          }
+        },
+        "cron": {
+          "entry": "src/cron.ts",
+          "restart": "always"
+        }
+      }
+    }
+  }
+}
 ```
 
 `up` creates missing boxes, recreates changed ones (label `tsbox.spec-hash` over specification and sources) and
@@ -310,7 +353,7 @@ client/  sdk/  manifest/               API client, provider API, manifest (publi
 cmd/tsbox/                             CLI (+ roles daemon, __init, __exec, __oomexec, __probe, __fcinit, __fcexec), CLI E2E tests
 internal/daemon                        tsboxd: API, state, socket/pipe
 internal/logfile  internal/project    log files with rotation, tsbox.json
-internal/profile  internal/fsutil     named profiles (rootfs), rename and RemoveAll with retries and fallbacks (Windows)
+internal/profile  internal/fsutil     named profiles (rootfs), file helpers: rename and RemoveAll with retries and fallbacks (Windows), SHA-256, path checks
 internal/proto                         frames v2
 internal/initbox                       tsbox-init
 internal/driver/{gvisor,firecracker,dev,cgroup}   drivers, build sandbox / build microVM

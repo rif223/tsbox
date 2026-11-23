@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/rif223/tsbox"
+	"github.com/rif223/tsbox/internal/build"
 	"github.com/rif223/tsbox/internal/denobin"
 	"github.com/rif223/tsbox/internal/fsutil"
 	"github.com/rif223/tsbox/internal/providers/extproc"
@@ -399,10 +400,10 @@ func sdkTest(args []string) int {
 	defer fsutil.RemoveAll(tmp)
 	_ = writeEmbedded(js.Core, "core", filepath.Join(tmp, "core"))
 	abs, _ := filepath.Abs(dir)
-	imports := map[string]string{"@tsbox/core": fileURL(filepath.Join(tmp, "core", "mod.ts")), m.Import: fileURL(filepath.Join(abs, m.Module))}
+	imports := map[string]string{"@tsbox/core": build.FileURL(filepath.Join(tmp, "core", "mod.ts")), m.Import: build.FileURL(filepath.Join(abs, m.Module))}
 	for _, req := range m.Requires {
 		if s, err := registry().Resolve(req); err == nil {
-			imports[s.Manifest.Import] = fileURL(s.ModulePath())
+			imports[s.Manifest.Import] = build.FileURL(s.ModulePath())
 		}
 	}
 	cfg, _ := json.Marshal(map[string]any{"imports": imports})
@@ -510,12 +511,4 @@ func errorsAs(err error, target **sdk.Error) bool {
 		err = u.Unwrap()
 	}
 	return false
-}
-
-func fileURL(p string) string {
-	p = filepath.ToSlash(p)
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	return "file://" + p
 }

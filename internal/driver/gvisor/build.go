@@ -6,9 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +14,7 @@ import (
 
 	"github.com/rif223/tsbox/internal/build"
 	"github.com/rif223/tsbox/internal/driver/cgroup"
+	"github.com/rif223/tsbox/internal/fsutil"
 )
 
 // Build sandbox: deno bundle runs in its own gVisor sandbox
@@ -98,8 +97,8 @@ func (d *Driver) RunBuild(ctx context.Context, inv build.Invocation) ([]byte, []
 	cmd := exec.Command(d.cfg.Runsc, append(d.globalFlags(), "run", "--bundle", bundle, id)...)
 	cmd.Env = []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &limitWriter{w: &stdout, n: maxBundle}
-	cmd.Stderr = &limitWriter{w: &stderr, n: 1 << 20}
+	cmd.Stdout = &fsutil.LimitWriter{W: &stdout, N: maxBundle}
+	cmd.Stderr = &fsutil.LimitWriter{W: &stderr, N: 1 << 20}
 	if err := cmd.Start(); err != nil {
 		return nil, nil, err
 	}
@@ -115,17 +114,4 @@ func (d *Driver) RunBuild(ctx context.Context, inv build.Invocation) ([]byte, []
 	}
 	_ = exec.Command(d.cfg.Runsc, append(d.globalFlags(), "delete", "-force", id)...).Run()
 	return stdout.Bytes(), stderr.Bytes(), err
-}
-
-type limitWriter struct {
-	w io.Writer
-	n int64
-}
-
-func (l *limitWriter) Write(p []byte) (int, error) {
-	if int64(len(p)) > l.n {
-		return 0, errors.New("output too large")
-	}
-	l.n -= int64(len(p))
-	return l.w.Write(p)
 }

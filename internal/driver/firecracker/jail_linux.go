@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/rif223/tsbox/internal/fsutil"
 )
 
 // Jailer (opt-in, Config.Jailer): Firecracker's jailer starts the VMM in a chroot of its own, in its own
@@ -71,7 +73,7 @@ func (d *Driver) newJail(id, image string) (*jail, error) {
 // jailKernel is a copy of the guest kernel in the state directory, so that it can be hard-linked into the
 // chroots (the configured kernel may live on another file system).
 func (d *Driver) jailKernel() (string, error) {
-	h, err := fileHash(d.cfg.Kernel)
+	h, err := fsutil.FileSHA256(d.cfg.Kernel)
 	if err != nil {
 		return "", err
 	}

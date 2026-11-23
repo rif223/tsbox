@@ -306,18 +306,25 @@ func (d *Daemon) hStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, rec.view(d))
 }
 
-func (d *Daemon) hStop(w http.ResponseWriter, r *http.Request) {
+// stopRequested stops the box named in the request with the requested grace period.
+func (d *Daemon) stopRequested(r *http.Request) (*record, error) {
 	rec, err := d.get(r.PathValue("name"))
 	if err != nil {
-		writeErr(w, err)
-		return
+		return nil, err
 	}
 	grace, err := queryDuration(r, "grace")
 	if err != nil {
-		writeErr(w, err)
-		return
+		return nil, err
 	}
 	if err := d.stopBox(r.Context(), rec, grace); err != nil {
+		return nil, err
+	}
+	return rec, nil
+}
+
+func (d *Daemon) hStop(w http.ResponseWriter, r *http.Request) {
+	rec, err := d.stopRequested(r)
+	if err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -325,17 +332,8 @@ func (d *Daemon) hStop(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Daemon) hRestart(w http.ResponseWriter, r *http.Request) {
-	rec, err := d.get(r.PathValue("name"))
+	rec, err := d.stopRequested(r)
 	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	grace, err := queryDuration(r, "grace")
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	if err := d.stopBox(r.Context(), rec, grace); err != nil {
 		writeErr(w, err)
 		return
 	}

@@ -173,7 +173,7 @@ func bundle(ctx context.Context, o Options, src string) (Artifact, error) {
 	// The entry path is not in the bundle; in the random directory parallel builds do not collide.
 	entry := filepath.Join(tmp, "entry.ts")
 	// boot first: console, stdout and heartbeat are set up before script code runs.
-	entrySrc := fmt.Sprintf("import \"@tsbox/core/boot\";\nimport %q;\n", fileURL(src))
+	entrySrc := fmt.Sprintf("import \"@tsbox/core/boot\";\nimport %q;\n", FileURL(src))
 	if err := os.WriteFile(cfgPath, cfg, 0o600); err != nil {
 		return Artifact{}, err
 	}
@@ -202,7 +202,7 @@ func bundle(ctx context.Context, o Options, src string) (Artifact, error) {
 		if text == "" {
 			return Artifact{}, fmt.Errorf("deno bundle: %w", err)
 		}
-		return Artifact{}, &Error{Output: strings.ReplaceAll(text, fileURL(tmp)+"/", ""), Hint: hint(text)}
+		return Artifact{}, &Error{Output: strings.ReplaceAll(text, FileURL(tmp)+"/", ""), Hint: hint(text)}
 	}
 	b, err := os.ReadFile(out)
 	if err != nil {
@@ -217,7 +217,7 @@ func bundle(ctx context.Context, o Options, src string) (Artifact, error) {
 		if r, err := filepath.Rel(tmp, p); err == nil && !strings.HasPrefix(r, "..") {
 			return "entry.ts" // the generated entry: no random path in the artifact
 		}
-		return fileURL(p)
+		return FileURL(p)
 	})
 	return Store(o.StoreDir, b)
 }
@@ -360,7 +360,8 @@ func writeCore(dir string) error {
 	return nil
 }
 
-func fileURL(p string) string {
+// FileURL is the escaped file: URL of an absolute path (also for Windows paths).
+func FileURL(p string) string {
 	p = filepath.ToSlash(p)
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p // C:/… → /C:/…
@@ -371,15 +372,15 @@ func fileURL(p string) string {
 // importMap is the import map for builds on the host: @tsbox/core from coreDir and the SDK modules.
 func importMap(o Options, coreDir string) ([]byte, error) {
 	imports := map[string]string{
-		"@tsbox/core":      fileURL(filepath.Join(coreDir, "mod.ts")),
-		"@tsbox/core/boot": fileURL(filepath.Join(coreDir, "boot.ts")),
+		"@tsbox/core":      FileURL(filepath.Join(coreDir, "mod.ts")),
+		"@tsbox/core/boot": FileURL(filepath.Join(coreDir, "boot.ts")),
 	}
 	for name, p := range o.Imports {
 		abs, err := filepath.Abs(p)
 		if err != nil {
 			return nil, err
 		}
-		imports[name] = fileURL(abs)
+		imports[name] = FileURL(abs)
 	}
 	return json.Marshal(map[string]any{"imports": imports})
 }

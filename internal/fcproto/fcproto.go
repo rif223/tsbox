@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/rif223/tsbox/internal/fsutil"
 )
 
 // Ports and CIDs.
@@ -178,7 +180,7 @@ func AddTree(tw *tar.Writer, hostDir, guestDir string) error {
 		}
 		if d.Type()&fs.ModeSymlink != 0 {
 			target, err := filepath.EvalSymlinks(p)
-			if err != nil || !within(realRoot, target) {
+			if err != nil || !fsutil.Within(realRoot, target) {
 				return nil
 			}
 		}
@@ -206,11 +208,6 @@ func AddTree(tw *tar.Writer, hostDir, guestDir string) error {
 		}
 		return nil
 	})
-}
-
-func within(root, p string) bool {
-	rel, err := filepath.Rel(root, p)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // CleanTarget checks a tar entry name: an absolute, clean path below one of roots. It returns the root and
@@ -248,7 +245,7 @@ func TreeSize(hostDir string) (bytes int64, files int, err error) {
 		}
 		if d.Type()&fs.ModeSymlink != 0 {
 			target, err := filepath.EvalSymlinks(p)
-			if err != nil || !within(realRoot, target) || info.IsDir() {
+			if err != nil || !fsutil.Within(realRoot, target) || info.IsDir() {
 				return nil
 			}
 		}
