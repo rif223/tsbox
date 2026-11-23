@@ -26,6 +26,7 @@ const (
 	helloTimeout   = 30 * time.Second
 	pingEvery      = 5 * time.Second
 	pongTimeout    = 20 * time.Second
+	hostPauseGap   = 3 * pingEvery // the watchdog ticks every pingEvery; a longer gap means the host was paused
 	stopGrace      = 5 * time.Second
 	maxViolations  = 20
 	maxLogMsg      = 4096
@@ -680,17 +681,22 @@ func (b *Box) maybeFinishLocked() {
 func (b *Box) watchdog(drv driver.Box, gen int) {
 	t := time.NewTicker(pingEvery)
 	defer t.Stop()
+	lastTick := time.Now()
 	for {
 		select {
 		case <-drv.Done():
 			return
 		case <-t.C:
+			now := time.Now()
 			b.mu.Lock()
 			if b.gen != gen || b.out == nil {
 				b.mu.Unlock()
 				return
 			}
-			if time.Since(b.lastPong) > pongTimeout {
+			var hung bool
+			b.lastPong, hung = checkPong(now, lastTick, b.lastPong)
+			lastTick = now
+			if hung {
 				b.errMsg = "box does not answer (watchdog)"
 				b.mu.Unlock()
 				_ = drv.Kill()
@@ -719,6 +725,19 @@ func (b *Box) watchdog(drv driver.Box, gen int) {
 			b.mu.Unlock()
 		}
 	}
+}
+
+// checkPong decides whether a box has stopped answering. If the watchdog itself did not run for a while,
+// the host was suspended or frozen and the box could not have answered either, so it gets a new deadline
+// instead of being quarantined. A box that really hangs is caught one pongTimeout later.
+//
+// The gap is measured on both clocks, because the monotonic clock stops during suspend on some systems.
+func checkPong(now, lastTick, lastPong time.Time) (newLastPong time.Time, hung bool) {
+	gap := max(now.Sub(lastTick), now.Round(0).Sub(lastTick.Round(0)))
+	if gap > hostPauseGap {
+		return now, false
+	}
+	return lastPong, now.Sub(lastPong) > pongTimeout
 }
 
 func (b *Box) markHung() {
