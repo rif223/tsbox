@@ -517,7 +517,12 @@ func TestStartCPU(t *testing.T) {
 	for _, c := range []struct {
 		entry    string
 		min, max time.Duration // time until the end of the boost
-	}{{"scripts/service.ts", 0, 2500 * time.Millisecond}, {"scripts/noready.ts", 2500 * time.Millisecond, 10 * time.Second}} {
+	}{
+		{"scripts/service.ts", 0, 2500 * time.Millisecond},
+		{"scripts/noready.ts", 2500 * time.Millisecond, 10 * time.Second},
+		// silent: "running" soon after the start (first heartbeat), but not ready: the boost still lasts
+		{"scripts/silent.ts", 2500 * time.Millisecond, 10 * time.Second},
+	} {
 		spec := one(t, c.entry, func(s *BoxSpec) { s.Limits.CPU, s.Limits.StartCPU = 0.5, 2 })
 		b, err := e.Run(context.Background(), spec) // builds first; measured from the start of the scripts
 		if err != nil {

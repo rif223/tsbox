@@ -43,6 +43,10 @@ sudo tsbox setup --firecracker         # Linux with KVM: additionally Firecracke
 tsbox doctor                           # what is available, which driver isolates
 ```
 
+**Windows:** started from a terminal inside a packaged (MSIX) app, tsbox's state in `%LOCALAPPDATA%\tsbox` is
+redirected into the app's package folder: builds get slower, and tsbox outside the app sees a different state.
+`tsbox doctor` warns about it; set `TSBOX_STATE` to a directory outside `%LOCALAPPDATA%` and `%APPDATA%`.
+
 ## Quick start
 
 ```bash

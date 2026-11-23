@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rif223/tsbox/internal/fsutil"
@@ -46,6 +47,9 @@ type Options struct {
 	// no cache.
 	Toolchain string
 	NoCache   bool // bypass the build cache
+	// Slots limits concurrent builds: a real build (not a cache hit) holds one element while it runs.
+	// nil = no limit.
+	Slots chan struct{}
 }
 
 // Mount is a host directory mounted read-only into the build sandbox.
@@ -138,6 +142,14 @@ func Bundle(ctx context.Context, o Options, src string) (Artifact, error) {
 }
 
 func bundle(ctx context.Context, o Options, src string) (Artifact, error) {
+	if o.Slots != nil {
+		select {
+		case o.Slots <- struct{}{}:
+			defer func() { <-o.Slots }()
+		case <-ctx.Done():
+			return Artifact{}, ctx.Err()
+		}
+	}
 	// Fixed work directory per core version: deno bundle writes module paths as comments into the artifact,
 	// a random directory would change the hash on every build.
 	work := filepath.Join(o.StoreDir, "work", coreHash())
@@ -152,7 +164,7 @@ func bundle(ctx context.Context, o Options, src string) (Artifact, error) {
 	if err != nil {
 		return Artifact{}, err
 	}
-	defer os.RemoveAll(tmp)
+	defer fsutil.RemoveAll(tmp)
 	cfg, err := importMap(o, coreDir)
 	if err != nil {
 		return Artifact{}, err
@@ -216,6 +228,14 @@ func Store(dir string, b []byte) (Artifact, error) {
 	h := hex.EncodeToString(sum[:])
 	dst := filepath.Join(dir, "sha256", h+".js")
 	if _, err := os.Stat(dst); err == nil {
+		touch(dst)
+		return Artifact{Path: dst, SHA256: h, Size: int64(len(b))}, nil
+	}
+	// One writer per process: on Windows renaming onto the read-only file of a parallel build with the
+	// same content fails, and fsutil.Rename would retry for about 4 s.
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	if _, err := os.Stat(dst); err == nil {
 		return Artifact{Path: dst, SHA256: h, Size: int64(len(b))}, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
@@ -275,11 +295,23 @@ func coreHash() string {
 	return "core-" + hex.EncodeToString(h.Sum(nil)[:8])
 }
 
+var (
+	coreMu  sync.Mutex // see writeCore
+	storeMu sync.Mutex // see Store
+)
+
 // writeCore stores @tsbox/core once per core version. Parallel builds read the directory, so it is
 // written to a sibling directory and renamed atomically, never overwritten (before: rewritten on every
 // build, and a parallel build saw an empty file – found by the load test).
 func writeCore(dir string) error {
 	done := filepath.Join(dir, ".complete")
+	if _, err := os.Stat(done); err == nil {
+		return nil
+	}
+	// One writer per process: on Windows the rename of a second writer onto the finished directory fails
+	// and fsutil.Rename would retry for about 4 s while holding a build slot.
+	coreMu.Lock()
+	defer coreMu.Unlock()
 	if _, err := os.Stat(done); err == nil {
 		return nil
 	}
@@ -308,18 +340,18 @@ func writeCore(dir string) error {
 		err = os.Chmod(tmp, 0o755)
 	}
 	if err != nil {
-		os.RemoveAll(tmp)
+		fsutil.RemoveAll(tmp)
 		return err
 	}
 	if _, serr := os.Stat(dir); serr == nil {
 		if _, derr := os.Stat(done); derr == nil {
-			os.RemoveAll(tmp) // a parallel build was faster
+			fsutil.RemoveAll(tmp) // a parallel build was faster
 			return nil
 		}
-		_ = os.RemoveAll(dir) // directory of an older tsbox version without marker
+		_ = fsutil.RemoveAll(dir) // directory of an older tsbox version without marker
 	}
 	if err := fsutil.Rename(tmp, dir); err != nil {
-		os.RemoveAll(tmp)
+		fsutil.RemoveAll(tmp)
 		if _, derr := os.Stat(done); derr == nil {
 			return nil
 		}

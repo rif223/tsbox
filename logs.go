@@ -2,13 +2,15 @@ package tsbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
-	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"time"
 
+	"github.com/rif223/tsbox/internal/fsutil"
 	"github.com/rif223/tsbox/internal/logfile"
 )
 
@@ -247,7 +249,8 @@ func (e *Engine) Remove(ctx context.Context, name string, force bool) error {
 	if !boxName.MatchString(name) {
 		return fmt.Errorf("invalid box name %q", name)
 	}
-	if b, ok := e.Box(name); ok {
+	b, known := e.Box(name)
+	if known {
 		if !b.terminal() {
 			if !force {
 				return fmt.Errorf("box %q is running: stop it first or use -f", name)
@@ -256,23 +259,27 @@ func (e *Engine) Remove(ctx context.Context, name string, force bool) error {
 				return err
 			}
 		}
-		e.forget(name, b)
 	}
 	e.flushLogs(ctx)
 	e.closeWriter(name)
-	return removeAll(filepath.Join(e.cfg.stateDir, "boxes", name))
+	// Delete first, forget afterwards: if the directory cannot be removed, the box stays known (terminal) and
+	// a second Remove can try again, instead of an unknown box whose directory is left behind.
+	if err := fsutil.RemoveAllRetry(filepath.Join(e.cfg.stateDir, "boxes", name)); err != nil {
+		return fmt.Errorf("remove box %q: %w%s", name, err, removeHint(err))
+	}
+	if known {
+		e.forget(name, b)
+	}
+	return nil
 }
 
-// removeAll retries on Windows: processes that just ended keep files open for a moment.
-func removeAll(dir string) error {
-	var err error
-	for i := 0; i < 20; i++ {
-		if err = os.RemoveAll(dir); err == nil || runtime.GOOS != "windows" {
-			return err
-		}
-		time.Sleep(100 * time.Millisecond)
+// removeHint explains the error that file system virtualization of packaged Windows apps causes
+// (fsutil.RemoveAll); its fallback normally hides it.
+func removeHint(err error) string {
+	if runtime.GOOS == "windows" && errors.Is(err, syscall.ELOOP) {
+		return " (the state directory seems to be virtualized by a packaged app; run tsbox doctor, or set TSBOX_STATE to a directory outside %LOCALAPPDATA%)"
 	}
-	return err
+	return ""
 }
 
 // Spec returns the validated specification of the box (with defaults, without env values).

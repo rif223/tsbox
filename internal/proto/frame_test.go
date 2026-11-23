@@ -83,8 +83,10 @@ func TestFromScriptSubsetOfKnown(t *testing.T) {
 			t.Errorf("a script must not send %s", forbidden)
 		}
 	}
-	if FromInit[TAlive] {
-		t.Error("alive must not reach the host")
+	for typ := range FromScript {
+		if !FromInit[typ] {
+			t.Errorf("%s from a script must be accepted from init", typ)
+		}
 	}
 }
 

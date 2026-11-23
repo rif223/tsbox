@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/rif223/tsbox/internal/fsutil"
 )
 
 // WarmCache fills cacheDir once as the read-only DENO_DIR of a build sandbox (needs network): a bundle with
@@ -19,7 +21,7 @@ func WarmCache(ctx context.Context, deno, cacheDir string) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmp)
+	defer fsutil.RemoveAll(tmp)
 	src := filepath.Join(tmp, "warm.ts")
 	if err := os.WriteFile(src, []byte("export const x: number = 1;\n"), 0o644); err != nil {
 		return err

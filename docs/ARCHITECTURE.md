@@ -170,11 +170,12 @@ for m, err := range c.Attach(ctx, client.CreateRequest{Spec: spec}) { … } // l
 
 - **Public packages:** `tsbox` (engine), `client` (API of tsboxd), `sdk` (provider API), `manifest` (manifest, grants). Everything else is `internal/`.
 - **Logs:** per script `<state>/boxes/<box>/logs/<script>.log`, rotated at 10 MiB (`WithLogFileSize`), at most two files; can be turned off with `WithoutLogFiles()`. A separate goroutine writes them via a bounded queue (losses are counted). `LogLine.Seq` is strictly monotonic; `Box.Logs`/`Engine.Logs` return stored lines (`Since`, `Script`, `Tail`) and with `Follow` new ones until the box ends.
+- **Script states:** `pending` (not started yet) → `starting` (process started, @tsbox/core not up yet) → `running` (the first frame of the script arrived: its first heartbeat, a log line, an SDK call, …; independent of whether and how it logs) → `ready` (only after the script's own `ready()`, opt-in) → `exited`; also `backoff` and `broken`. `script_started` is emitted once per start, `script_ready` at `ready()`.
 - **Events** (asynchronous, never blocking, losses are counted): `box_started`, `box_exited`, `box_quarantined`, `script_started`, `script_ready`, `script_exited` (with reason), `restart_scheduled`, `circuit_open`, `integrity_failed`, `oom`, `violation`.
 - **Exit reasons:** `exit`, `crash`, `heap`, `rss`, `threads`, `oom`, `watchdog`, `timeout`, `integrity`, `protocol`, `backpressure`, `spawn_failed`, `killed`, `stopped`, `box_hung`, `box_died`, `box_shutdown`.
 - **Restart policy:** `no` | `on-failure` | `always`, backoff 1 s · 2^(n−1) up to 60 s. Circuit breaker: n failures in 10 min ⇒ `broken`. `integrity` and `protocol` never restart; a hung or dead box is quarantined.
 - **Profiles and host OOM:** `BoxSpec.Profile` selects the rootfs (gVisor only; `WithRootFS` = `default`, `WithProfilesDir` for others, `Engine.Profiles()` lists them with their fingerprint). `WithOOMScoreAdj` (default 500) applies to the host processes of every box.
-- **Build cache and platform:** unchanged scripts are not rebuilt (key over script directory, SDK modules, core, Deno version; `WithoutBuildCache()` turns it off). `WithGVisorPlatform("kvm")` or `TSBOX_PLATFORM` selects the gVisor platform (needs `/dev/kvm`).
+- **Build cache and platform:** unchanged scripts are not rebuilt (key over script directory, SDK modules, core, Deno version; `WithoutBuildCache()` turns it off). Real builds of an engine are limited (dev 4, gVisor and Firecracker 2); store entries unused for 7 days are removed. `WithGVisorPlatform("kvm")` or `TSBOX_PLATFORM` selects the gVisor platform (needs `/dev/kvm`).
 - **CPU boost at start (opt-in):** `Limits.StartCPU` (`--start-cpu`, `"startCpu"`) lets the box start with more CPU until all scripts are ready or have ended (at most 30 s); after that `Limits.CPU` applies. If the reset fails, the box is ended. Works under gVisor (cgroup `cpu.max`) and dev on Windows (job object).
 
 ## 5. Protocol v2
@@ -188,7 +189,7 @@ for m, err := range c.Attach(ctx, client.CreateRequest{Spec: spec}) { … } // l
 | call / ret | script → host / back | id, sdk, m, p / id, p \| err{code, msg} |
 | sub / unsub / event | script → host / host → script | sdk, events[] / sdk, name, p |
 | ready, log, stats | script → host | – / level, msg / p{heapUsed, heapTotal, external} |
-| alive | script → init (heartbeat, not forwarded) | – |
+| alive | script → init (heartbeat); init forwards only the first one of every start (`starting` → `running`) | – |
 | pstats, exit | init → host | p[{sid, rss, cpuNs, threads}] / sid, p{code, signal, reason, detail} |
 | ping / pong | host ↔ init (box watchdog) | id |
 | init, init_ok, open, opened, close, emit | engine ⇄ external provider | see §6.4 |
@@ -291,7 +292,7 @@ If the process dies, open calls fail with `unavailable`; the next open restarts 
 | | Linux + gVisor | Linux + Firecracker (opt-in) | Linux without gVisor | Windows | macOS |
 |---|---|---|---|---|---|
 | driver `auto` | gvisor | never chosen by `auto` | dev + warning | dev + warning | dev + warning |
-| box RAM | cgroup | cgroup in the guest (VM RAM = limit + 64 MiB) | watchdog | job object + watchdog | – |
+| box RAM | cgroup | cgroup in the guest (VM RAM = limit + 64 MiB) | watchdog | job object + watchdog (private memory without the unused writable sections of init's image) | – |
 | box CPU / processes | cgroup | host cgroup of the VM / cgroup in the guest | – | job object | – |
 | script RSS / threads | `VmRSS−baseline` / RLIMIT_NPROC | RssAnon (exact) / RLIMIT_NPROC (real guest kernel) | RssAnon / measured | private memory / – | – |
 | UID per script | yes | yes, `/proc` with `hidepid=2` | no | no | no |
@@ -309,7 +310,7 @@ client/  sdk/  manifest/               API client, provider API, manifest (publi
 cmd/tsbox/                             CLI (+ roles daemon, __init, __exec, __oomexec, __probe, __fcinit, __fcexec), CLI E2E tests
 internal/daemon                        tsboxd: API, state, socket/pipe
 internal/logfile  internal/project    log files with rotation, tsbox.json
-internal/profile  internal/fsutil     named profiles (rootfs), rename with retries (Windows)
+internal/profile  internal/fsutil     named profiles (rootfs), rename and RemoveAll with retries and fallbacks (Windows)
 internal/proto                         frames v2
 internal/initbox                       tsbox-init
 internal/driver/{gvisor,firecracker,dev,cgroup}   drivers, build sandbox / build microVM

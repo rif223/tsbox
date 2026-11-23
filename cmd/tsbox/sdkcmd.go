@@ -80,7 +80,7 @@ func types(args []string) int {
 	}
 	reg := registry()
 	out := filepath.Join(*dir, ".tsbox", "types")
-	_ = os.RemoveAll(out)
+	_ = fsutil.RemoveAll(out)
 	imports := map[string]string{
 		"@tsbox/core": "./.tsbox/types/core/mod.ts",
 	}
@@ -396,7 +396,7 @@ func sdkTest(args []string) int {
 	}
 	// Type check of the module with @tsbox/core and required SDKs.
 	tmp, _ := os.MkdirTemp("", "tsbox-sdktest-")
-	defer os.RemoveAll(tmp)
+	defer fsutil.RemoveAll(tmp)
 	_ = writeEmbedded(js.Core, "core", filepath.Join(tmp, "core"))
 	abs, _ := filepath.Abs(dir)
 	imports := map[string]string{"@tsbox/core": fileURL(filepath.Join(tmp, "core", "mod.ts")), m.Import: fileURL(filepath.Join(abs, m.Module))}

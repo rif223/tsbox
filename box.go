@@ -9,12 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/rif223/tsbox/internal/build"
 	"github.com/rif223/tsbox/internal/driver"
+	"github.com/rif223/tsbox/internal/fsutil"
 	"github.com/rif223/tsbox/internal/initbox"
 	"github.com/rif223/tsbox/internal/profile"
 	"github.com/rif223/tsbox/internal/proto"
@@ -212,36 +214,76 @@ func (b *Box) dir() string { return filepath.Join(b.e.cfg.stateDir, "boxes", b.s
 func (b *Box) build(ctx context.Context) error {
 	adir := filepath.Join(b.dir(), "artifacts")
 	if !b.checkOnly {
-		_ = os.RemoveAll(adir)
+		if err := fsutil.RemoveAll(adir); err != nil {
+			// artifacts are content-addressed and checked by init, so stale files are only wasted space
+			b.e.cfg.logger.Warn("removing old artifacts", "box", b.spec.Name, "err", err)
+		}
 		if err := os.MkdirAll(adir, 0o755); err != nil {
 			return err
 		}
 	}
-	for _, name := range b.order {
+	// Scripts are built in parallel (deno's type check is the slow, single-threaded part); errors are
+	// reported in script order.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errs := make([]error, len(b.order))
+	sem := make(chan struct{}, buildParallel())
+	var wg sync.WaitGroup
+	for i, name := range b.order {
 		s := b.scripts[name]
 		if len(s.spec.debugExec) > 0 {
 			continue
 		}
-		a, err := b.e.bundle(ctx, s.spec.Entry, b.imports)
-		if err != nil {
-			return fmt.Errorf("script %q: %w", name, err)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				errs[i] = ctx.Err()
+				return
+			}
+			if errs[i] = b.buildScript(ctx, s, adir); errs[i] != nil {
+				errs[i] = fmt.Errorf("script %q: %w", name, errs[i])
+				cancel()
+			}
+		}()
+	}
+	wg.Wait()
+	var first error
+	for _, err := range errs {
+		if err != nil && (first == nil || errors.Is(first, context.Canceled)) {
+			first = err // prefer the cause over the cancellations it triggered
 		}
-		if b.checkOnly {
-			s.artifact = a
-			continue
-		}
-		data, err := os.ReadFile(a.Path)
-		if err != nil {
+	}
+	return first
+}
+
+// buildParallel limits parallel builds of one box; Engine.buildSlots limits real builds of all boxes.
+func buildParallel() int { return max(1, min(4, runtime.GOMAXPROCS(0))) }
+
+// buildScript builds one script and copies the artifact into adir. It writes only s.artifact.
+func (b *Box) buildScript(ctx context.Context, s *script, adir string) error {
+	a, err := b.e.bundle(ctx, s.spec.Entry, b.imports)
+	if err != nil {
+		return err
+	}
+	if b.checkOnly {
+		s.artifact = a
+		return nil
+	}
+	data, err := os.ReadFile(a.Path)
+	if err != nil {
+		return err
+	}
+	dst := filepath.Join(adir, a.SHA256+".js")
+	if err := os.WriteFile(dst, data, 0o444); err != nil && !os.IsExist(err) {
+		if _, serr := os.Stat(dst); serr != nil {
 			return err
 		}
-		dst := filepath.Join(adir, a.SHA256+".js")
-		if err := os.WriteFile(dst, data, 0o444); err != nil && !os.IsExist(err) {
-			if _, serr := os.Stat(dst); serr != nil {
-				return err
-			}
-		}
-		s.artifact = build.Artifact{Path: dst, SHA256: a.SHA256, Size: a.Size, Cached: a.Cached}
 	}
+	s.artifact = build.Artifact{Path: dst, SHA256: a.SHA256, Size: a.Size, Cached: a.Cached}
 	return nil
 }
 
@@ -464,14 +506,18 @@ func (b *Box) dispatch(f *proto.Frame) {
 		go b.violation("unknown script "+f.SID, false)
 		return
 	}
+	// Any frame of the script itself shows that its process and @tsbox/core are up: starting -> running.
+	// init forwards the first heartbeat of every start, so this also holds for scripts that never log or
+	// only log through an SDK. "ready" stays the script's own opt-in signal (ready()).
+	if s.state == ScriptStarting && proto.FromScript[f.T] {
+		s.state = ScriptRunning
+	}
 	switch f.T {
+	case proto.TAlive: // only the state change above
 	case proto.TReady:
 		s.state = ScriptReady
 		b.e.emit(Event{At: time.Now(), Kind: EventScriptReady, Box: b.spec.Name, Script: s.spec.Name})
 	case proto.TLog:
-		if s.state == ScriptStarting {
-			s.state = ScriptRunning
-		}
 		b.logLocked(s, f.Level, f.Msg)
 	case proto.TStats:
 		var st proto.ScriptStats
