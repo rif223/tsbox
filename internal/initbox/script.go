@@ -140,28 +140,59 @@ func scanLinesLimited(data []byte, atEOF bool) (int, []byte, error) {
 	return 0, nil, nil
 }
 
+// hostPauseGap: the monitor ticks every monitorEvery; a much longer gap means the host was suspended or frozen.
+const hostPauseGap = 5 * time.Second
+
+// hostPaused reports whether the monitor did not run for a while. The gap is measured on both clocks,
+// because the monotonic clock stops during suspend on some systems.
+func hostPaused(now, lastTick time.Time) bool {
+	return max(now.Sub(lastTick), now.Round(0).Sub(lastTick.Round(0))) > hostPauseGap
+}
+
+// watchdogExpired returns why a script counts as blocked, or "" if it does not. Time before notBefore
+// does not count: that is the script's start or the end of a host pause, during which it could not
+// send a heartbeat. lastAlive is the UnixNano of the last heartbeat, 0 if there was none yet.
+func watchdogExpired(now, notBefore time.Time, lastAlive int64, wd time.Duration) string {
+	if lastAlive == 0 {
+		if now.Sub(notBefore) > wd+startupGrace {
+			return "no heartbeat after the start"
+		}
+		return ""
+	}
+	since := time.Unix(0, lastAlive)
+	if notBefore.After(since) {
+		since = notBefore
+	}
+	if now.Sub(since) > wd {
+		return "event loop blocked"
+	}
+	return ""
+}
+
 // monitor enforces watchdog, run time, RSS and threads and collects measurements.
 func (p *scriptProc) monitor() {
 	t := time.NewTicker(monitorEvery)
 	defer t.Stop()
 	first := true
+	lastTick := time.Now()
+	notBefore := p.started
 	for {
 		select {
 		case <-p.done:
 			return
-		case now := <-t.C:
+		case <-t.C:
+			now := time.Now() // not the tick's time: a tick from before a suspend may still be queued
+			if hostPaused(now, lastTick) {
+				notBefore = now
+			}
+			lastTick = now
 			if p.spec.TimeoutMs > 0 && now.Sub(p.started) > time.Duration(p.spec.TimeoutMs)*time.Millisecond {
 				p.kill("timeout", "run time limit reached")
 				return
 			}
 			if wd := time.Duration(p.spec.WatchdogMs) * time.Millisecond; wd > 0 && len(p.spec.DebugExec) == 0 {
-				last := p.lastAlive.Load()
-				if last == 0 && now.Sub(p.started) > wd+startupGrace {
-					p.kill("watchdog", "no heartbeat after the start")
-					return
-				}
-				if last != 0 && now.Sub(time.Unix(0, last)) > wd {
-					p.kill("watchdog", "event loop blocked")
+				if detail := watchdogExpired(now, notBefore, p.lastAlive.Load(), wd); detail != "" {
+					p.kill("watchdog", detail)
 					return
 				}
 			}
