@@ -70,6 +70,22 @@ Interpretation:
   installing and removing are atomic (copy next to the target, rename; `lock.json` changes last).
 
 **Build**
+- Removing a box deletes its directory first and forgets the box afterwards: if the directory cannot be
+  deleted, the box stays listed (`ps -a`) and `rm` can be repeated, instead of an unknown box whose directory
+  is left behind.
+- A script is `running` as soon as any frame of its own arrives; init forwards the first heartbeat of every
+  start for that, so scripts that never log or only log through `@tsbox/log` (call frames) do not stay
+  `starting`. The protocol version stays 2: the host only accepts one more type from init, and init and host
+  are always the same binary. `ready` stays the script's opt-in; the start boost waits for it as before.
+- The scripts of one box are built in parallel (at most 4, `GOMAXPROCS`); errors are reported in script
+  order. All real builds of an engine share a limit (cache hits do not count): 4 with dev, 2 with gVisor and
+  Firecracker, where a single build may use up to 768 MiB. Measured on Windows (dev, Deno 2.9.6), one box with 3 changed scripts: `up -d` 6.9 s → 3.5 s.
+- **Where a build's time goes** (Windows, dev, one changed small script, state outside the virtualization):
+  `deno info` (cache key) 0.2 s, `deno bundle --check` 1.9–2.5 s, of which the type check is ≈ 1.65 s (also as a
+  separate `deno check`, Deno's check cache does not help after a change; bundling alone 0.2 s). Splitting
+  check and bundle or running them in parallel would save ≤ 0.2 s; an opt-in `--no-check` would save the
+  1.65 s but give up the guarantee that type errors abort, so it is not offered. `WaitDelay` (5 s) is not
+  involved: deno exits normally.
 - Builds always run with `--check` (without it `deno bundle` does not type-check) and with `--no-config
   --import-map`: otherwise Deno uses the nearest `deno.json` for modules in other directories, which bundled
   `@tsbox/core` twice and allowed imports of SDKs that were not activated.
@@ -81,6 +97,10 @@ Interpretation:
   and SDK directories. On the host (dev) `deno info --json` adds every file outside the directory (also pure type
   imports) with its hash; if the graph cannot be resolved, there is no cache. Above 5000 files or 64 MiB the
   build runs without cache. Failed builds are never cached. `WithoutBuildCache()` turns it off.
+- **Artifact store cleanup:** artifacts, cache entries, work directories of other core versions and leftovers
+  of interrupted builds are removed after 7 days without use, checked at most once per hour and engine after a
+  build. A use refreshes the modification time (at most once a day). Boxes keep their own artifact copies, so
+  a removed entry only costs a rebuild.
 - An SDK's module must be in the root directory of the SDK (the build sandbox mounts that directory).
 - `@tsbox/core` is written once per version into a sibling directory and renamed atomically (parallel builds
   once read a half-written file).
@@ -152,6 +172,27 @@ bash scripts/fuzz.sh                                # all fuzz targets
   a job object with `KILL_ON_JOB_CLOSE` per build.
 - **Windows: "Access is denied" on rename.** Virus scanners keep freshly written files open for a moment; all
   atomic renames go through `fsutil.Rename` with retries (up to ≈ 4 s).
+- **Windows: Go 1.26 binaries are charged 32 MiB they never use.** Every Go program that imports
+  `crypto/rand` has a 32 MiB `.noptrbss` buffer (`crypto/internal/fips140/drbg.memory`) that is meant to cost
+  nothing until first use. Linux counts only touched pages; Windows charges the writable sections of an image
+  in full to the private memory (commit) of the process, which is what the job object and the dev driver's
+  watchdog measure. tsbox-init (the tsbox binary) thus showed about 57 MiB instead of about 24 MiB, and a
+  box with one idle script 87 MiB of a 128 MiB limit. The dev driver on Windows now subtracts the size of the
+  writable sections of the init binary (`debug/pe`) from the box's memory and adds it to the job's hard limit;
+  init's heap still counts. Measured: 86.8 MiB → 57.1 MiB for one idle script.
+- **Windows: packaged apps (MSIX) virtualize `%LOCALAPPDATA%`.** tsbox started from a terminal inside such an
+  app writes its default state `%LOCALAPPDATA%\tsbox` to
+  `%LOCALAPPDATA%\Packages\<family>\LocalCache\Local\tsbox`; a directory that exists at both places is merged.
+  Since Go 1.25 `os.RemoveAll` opens entries relative to the parent handle with `OBJ_DONT_REPARSE`; bindflt
+  answers that in a merged directory with `STATUS_REPARSE_POINT_ENCOUNTERED` (`ELOOP`, "too many levels of
+  symbolic links", with go1.26.0 "unlinkat …: is a directory"), so `rm`, `down` and recreating boxes in `up`
+  failed. All removals go through `fsutil.RemoveAll`, which falls back to deleting with plain paths (links
+  are removed, never followed). Such processes may have no package identity
+  (`GetCurrentPackageFamilyName` fails) and are still redirected, so `tsbox doctor` checks the effect: it
+  creates a probe file in the state and looks for it below `Packages\*\LocalCache`. Builds there are about
+  2.5–5 s slower (every file access of Deno goes through the filter); `TSBOX_STATE` outside `%LOCALAPPDATA%`
+  and `%APPDATA%` avoids all of this. A state written from inside the app is not visible to tsbox outside it
+  (`doctor` reports such copies).
 - **Windows: V8 heap message.** On Windows a native stack trace follows V8's out-of-memory message, so init
   checks every stderr line on arrival.
 - **WSL2 nested virtualization on AMD** was lost silently with Windows build `….9711` (KB5127648):

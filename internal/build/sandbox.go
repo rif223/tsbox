@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/rif223/tsbox/internal/fsutil"
 )
 
 // Paths in the build sandbox. They are fixed so that identical sources give identical artifacts.
@@ -38,7 +40,7 @@ func bundleSandbox(ctx context.Context, o Options, src, coreDir string) (Artifac
 	if err != nil {
 		return Artifact{}, err
 	}
-	defer os.RemoveAll(work)
+	defer fsutil.RemoveAll(work)
 	_ = os.Chmod(work, 0o755)
 
 	mounts := []Mount{{Host: work, Box: boxWork}, {Host: coreDir, Box: boxCore}, {Host: ctxDir, Box: boxSrc}}

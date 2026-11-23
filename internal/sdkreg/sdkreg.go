@@ -145,13 +145,13 @@ func (r *Registry) builtinDir(name string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	tmp := dir + ".tmp"
-	_ = os.RemoveAll(tmp)
+	_ = fsutil.RemoveAll(tmp)
 	if err := copyFS(sub, tmp); err != nil {
 		return "", err
 	}
 	if err := fsutil.Rename(tmp, dir); err != nil {
 		if _, serr := os.Stat(dir); serr == nil {
-			_ = os.RemoveAll(tmp)
+			_ = fsutil.RemoveAll(tmp)
 			return dir, nil
 		}
 		return "", err
@@ -183,7 +183,7 @@ func (r *Registry) Add(src string) (*SDK, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer os.RemoveAll(tmp)
+		defer fsutil.RemoveAll(tmp)
 		url, ref, _ := strings.Cut(strings.TrimPrefix(src, "git+"), "#")
 		args := []string{"clone", "--quiet", "--depth", "1"}
 		if ref != "" {
@@ -201,7 +201,7 @@ func (r *Registry) Add(src string) (*SDK, error) {
 			}
 			return nil, fmt.Errorf("git clone %s failed: %s", url, msg)
 		}
-		_ = os.RemoveAll(filepath.Join(tmp, ".git"))
+		_ = fsutil.RemoveAll(filepath.Join(tmp, ".git"))
 		dir = tmp
 	} else {
 		if slices.Contains(sdks.Names, src) {
@@ -236,18 +236,18 @@ func (r *Registry) Add(src string) (*SDK, error) {
 	}
 	// MkdirTemp creates 0700; the build sandbox (UID 65534) must be able to read the SDK.
 	if err := os.Chmod(tmpDst, 0o755); err != nil {
-		_ = os.RemoveAll(tmpDst)
+		_ = fsutil.RemoveAll(tmpDst)
 		return nil, err
 	}
 	if err := copyFS(os.DirFS(dir), tmpDst); err != nil {
-		_ = os.RemoveAll(tmpDst)
+		_ = fsutil.RemoveAll(tmpDst)
 		return nil, err
 	}
 	old := ""
 	if _, err := os.Stat(dst); err == nil {
 		old = tmpName(inst, ".old-"+s.Manifest.Name)
 		if err := rename(dst, old); err != nil {
-			_ = os.RemoveAll(tmpDst)
+			_ = fsutil.RemoveAll(tmpDst)
 			return nil, fmt.Errorf("replace SDK %q: %w (is it still in use?)", s.Manifest.Name, err)
 		}
 	}
@@ -255,11 +255,11 @@ func (r *Registry) Add(src string) (*SDK, error) {
 		if old != "" {
 			_ = rename(old, dst)
 		}
-		_ = os.RemoveAll(tmpDst)
+		_ = fsutil.RemoveAll(tmpDst)
 		return nil, err
 	}
 	if old != "" {
-		_ = os.RemoveAll(old)
+		_ = fsutil.RemoveAll(old)
 	}
 	lock, err := r.readLock()
 	if err != nil {
@@ -300,7 +300,7 @@ func (r *Registry) Remove(name string) error {
 		_ = rename(gone, dir)
 		return err
 	}
-	_ = os.RemoveAll(gone)
+	_ = fsutil.RemoveAll(gone)
 	return nil
 }
 
@@ -312,7 +312,7 @@ func (r *Registry) cleanup(inst string) {
 	ents, _ := os.ReadDir(inst)
 	for _, e := range ents {
 		if n := e.Name(); strings.HasPrefix(n, ".new-") || strings.HasPrefix(n, ".old-") || strings.HasPrefix(n, ".rm-") {
-			_ = os.RemoveAll(filepath.Join(inst, n))
+			_ = fsutil.RemoveAll(filepath.Join(inst, n))
 		}
 	}
 }

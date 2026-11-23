@@ -99,7 +99,12 @@ type processMemoryCountersEx struct {
 	privateUsage               uintptr
 }
 
-type platform struct{ job syscall.Handle }
+type platform struct {
+	job syscall.Handle
+	// overhead is the charged but unused private memory of init's image (imageOverhead); it is not
+	// counted against the box limit.
+	overhead int64
+}
 
 func prepare(*exec.Cmd) {}
 
@@ -121,8 +126,10 @@ func attach(cmd *exec.Cmd, l driver.Limits) (*platform, error) {
 		return nil, fmt.Errorf("%s: %w", what, err)
 	}
 	// Hard limit with headroom: the driver's watchdog already ends the box at MemoryBytes and reports it
-	// as OOM; the job only prevents it from growing far beyond that.
-	ext := extendedLimit{JobMemoryLimit: uintptr(l.MemoryBytes + max(l.MemoryBytes/4, 32<<20))}
+	// as OOM; the job only prevents it from growing far beyond that. The job counts init's image overhead,
+	// the watchdog does not.
+	overhead := imageOverhead(cmd.Path)
+	ext := extendedLimit{JobMemoryLimit: uintptr(l.MemoryBytes + max(l.MemoryBytes/4, 32<<20) + overhead)}
 	ext.Basic.LimitFlags = limitJobMemory | limitActiveProcess | limitKillOnClose | limitDieOnUnhandle
 	ext.Basic.ActiveProcessLimit = uint32(l.PIDs) // on Windows the limit counts processes, not threads
 	if err := call(procSetInformationJobObject, uintptr(job), jobObjectExtendedLimitInformation,
@@ -141,7 +148,7 @@ func attach(cmd *exec.Cmd, l driver.Limits) (*platform, error) {
 	if err := call(procAssignProcessToJobObject, uintptr(job), uintptr(ph)); err != nil {
 		return fail("AssignProcessToJobObject", err)
 	}
-	return &platform{job: job}, nil
+	return &platform{job: job, overhead: overhead}, nil
 }
 
 func (p *platform) kill(*exec.Cmd) error {
@@ -173,7 +180,7 @@ func (p *platform) stats(int) (driver.Stats, error) {
 	var ext extendedLimit
 	if call(procQueryInformationJobObjec, uintptr(p.job), jobObjectExtendedLimitInformation,
 		uintptr(unsafe.Pointer(&ext)), unsafe.Sizeof(ext), 0) == nil {
-		st.MemoryPeak = int64(ext.PeakJobMemoryUsed)
+		st.MemoryPeak = max(int64(ext.PeakJobMemoryUsed)-p.overhead, 0)
 	}
 	// Current memory: sum of the private memory of all processes in the job.
 	var list struct {
@@ -185,6 +192,7 @@ func (p *platform) stats(int) (driver.Stats, error) {
 		for _, pid := range list.IDs[:min(list.InList, uint32(len(list.IDs)))] {
 			st.MemoryBytes += privateBytes(uint32(pid))
 		}
+		st.MemoryBytes = max(st.MemoryBytes-p.overhead, 0)
 	}
 	return st, nil
 }

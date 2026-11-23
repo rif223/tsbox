@@ -99,8 +99,11 @@ func (p *scriptProc) pumpStdout(r io.Reader) {
 			return
 		}
 		if f.T == proto.TAlive {
-			p.lastAlive.Store(time.Now().UnixNano())
-			continue
+			// Only the first heartbeat of a start reaches the host: it tells that @tsbox/core is up
+			// (starting -> running) also for scripts that never log or log through an SDK.
+			if p.lastAlive.Swap(time.Now().UnixNano()) != 0 {
+				continue
+			}
 		}
 		// Identity comes from the pipe, never from the frame.
 		f.SID, f.SIDs = p.sid, nil

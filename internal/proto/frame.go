@@ -47,7 +47,7 @@ const (
 	TSub   = "sub"   // SDK, Events
 	TUnsub = "unsub" // SDK, Events
 	TStats = "stats" // self-report of the script (P: ScriptStats)
-	// script → init (not forwarded)
+	// script → init; init forwards only the first one of every start (host: starting → running)
 	TAlive = "alive" // event loop heartbeat (script watchdog)
 
 	// engine ⇄ external provider (provider protocol over stdio; SID = session). They never reach a box:
@@ -75,7 +75,7 @@ var FromScript = map[string]bool{
 // FromInit are the types the host accepts from init.
 var FromInit = map[string]bool{
 	THello: true, TExit: true, TPStats: true, TPong: true,
-	TReady: true, TLog: true, TCall: true, TSub: true, TUnsub: true, TStats: true,
+	TReady: true, TLog: true, TCall: true, TSub: true, TUnsub: true, TStats: true, TAlive: true,
 }
 
 // Frame is deliberately flat so that Go and TypeScript agree without a schema generator.

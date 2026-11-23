@@ -69,6 +69,9 @@ func doctorCmd(args []string) int {
 		os.Remove(f.Name())
 		c.ok("state", state)
 	}
+	if msg := virtualizedState(state); msg != "" {
+		c.warn("state", msg)
+	}
 
 	var isolated []string
 	if runtime.GOOS == "linux" {

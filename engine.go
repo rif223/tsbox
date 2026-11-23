@@ -170,6 +170,9 @@ type Engine struct {
 	sink   chan sinkItem // log lines → files
 	logwMu sync.Mutex
 	logw   map[string]*logfile.Writer
+
+	buildSlots chan struct{} // real builds of this engine at the same time
+	pruned     atomic.Int64  // UnixNano of the last cleanup of the artifact store
 }
 
 // New creates an engine. Without WithDriver it chooses gvisor if it is usable (Linux, root, runsc,
@@ -258,6 +261,7 @@ func New(ctx context.Context, opts ...Option) (*Engine, error) {
 		e.providers[name] = p
 	}
 	e.logw = map[string]*logfile.Writer{}
+	e.buildSlots = make(chan struct{}, buildSlots(e.driver.Isolated()))
 	if !cfg.noLogFiles {
 		e.sink = make(chan sinkItem, 4096)
 		e.wg.Add(1)
@@ -530,7 +534,7 @@ func (e *Engine) Check(ctx context.Context, spec BoxSpec) (map[string]string, er
 // bundle builds a script (gvisor/firecracker: in a build sandbox without network, otherwise on the host).
 func (e *Engine) bundle(ctx context.Context, entry string, imports map[string]string) (build.Artifact, error) {
 	o := build.Options{Deno: e.cfg.deno, StoreDir: filepath.Join(e.cfg.stateDir, "artifacts"), Imports: imports,
-		NoCache: e.cfg.noBuildCache}
+		NoCache: e.cfg.noBuildCache, Slots: e.buildSlots}
 	deno := e.cfg.deno
 	// Under gVisor the build runs in its own sandbox without network; dev builds on the host with
 	// --no-remote --no-npm.
@@ -545,7 +549,29 @@ func (e *Engine) bundle(ctx context.Context, entry string, imports map[string]st
 		deno = sd.RootDeno()
 	}
 	o.Toolchain = e.toolchainID(ctx, deno)
-	return build.Bundle(ctx, o, entry)
+	a, err := build.Bundle(ctx, o, entry)
+	e.pruneStore(o.StoreDir) // after the build: what it just used counts as fresh
+	return a, err
+}
+
+// buildSlots is the number of builds an engine runs at the same time. A build in a sandbox or microVM may
+// use up to 768 MiB, so isolating drivers run fewer of them.
+func buildSlots(isolated bool) int {
+	if isolated {
+		return min(2, max(1, runtime.GOMAXPROCS(0)))
+	}
+	return max(1, min(4, runtime.GOMAXPROCS(0)))
+}
+
+// pruneStore removes unused entries of the artifact store, at most once per hour and engine.
+func (e *Engine) pruneStore(dir string) {
+	now, last := time.Now().UnixNano(), e.pruned.Load()
+	if now-last < int64(time.Hour) || !e.pruned.CompareAndSwap(last, now) {
+		return
+	}
+	if n := build.Prune(dir, build.PruneAge); n > 0 {
+		e.cfg.logger.Info("artifact store cleaned up", "removed", n)
+	}
 }
 
 // sandboxBuilder: drivers that build in a sandbox of their own (gvisor, firecracker) and use profiles.

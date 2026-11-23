@@ -166,6 +166,8 @@ func cacheGet(storeDir, key string) (Artifact, bool) {
 		}
 	}
 	p := filepath.Join(storeDir, "sha256", sum+".js")
+	touch(cachePath(storeDir, key))
+	touch(p)
 	data, err := os.ReadFile(p)
 	if err != nil {
 		return Artifact{}, false
@@ -210,7 +212,7 @@ func hostGraph(ctx context.Context, o Options, src, coreDir string, roots []stri
 	if err != nil {
 		return nil, false
 	}
-	defer os.RemoveAll(tmp)
+	defer fsutil.RemoveAll(tmp)
 	cfg, err := importMap(o, coreDir)
 	if err != nil {
 		return nil, false
