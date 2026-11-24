@@ -79,6 +79,9 @@ func New(cfg Config) (*Driver, error) {
 	if cfg.RootFS == "" || cfg.StateDir == "" {
 		return nil, errors.New("firecracker: RootFS and StateDir are required")
 	}
+	if err := driver.CheckArch("firecracker"); err != nil {
+		return nil, err
+	}
 	if os.Geteuid() != 0 {
 		return nil, errors.New("firecracker: needs root (KVM, cgroups)")
 	}
@@ -118,7 +121,7 @@ func New(cfg Config) (*Driver, error) {
 func CheckKVM() error {
 	f, err := os.OpenFile(KVMDevice, os.O_RDWR, 0)
 	if err != nil {
-		return fmt.Errorf("firecracker: %s not usable (%v); Firecracker needs KVM (Linux on hardware or nested virtualization)", KVMDevice, err)
+		return fmt.Errorf("firecracker: %s not usable (%v); Firecracker needs KVM: %s", KVMDevice, err, driver.KVMHint())
 	}
 	return f.Close()
 }

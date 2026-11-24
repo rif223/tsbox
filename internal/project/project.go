@@ -40,6 +40,7 @@ type Box struct {
 	Restart string            `json:"restart,omitempty"` // no | on-failure[:n] | always
 	Storage string            `json:"storage,omitempty"`
 	Profile string            `json:"profile,omitempty"` // rootfs under gVisor (default: default)
+	Driver  string            `json:"driver,omitempty"`  // gvisor | firecracker | dev (default: the daemon's)
 	Labels  map[string]string `json:"labels,omitempty"`
 	SDKs    map[string]SDK    `json:"sdks,omitempty"`
 	Scripts map[string]Script `json:"scripts"`
@@ -237,7 +238,12 @@ func Parse(raw []byte, dir string) (*Project, error) {
 }
 
 func (b Box) spec(name, dir string) (tsbox.BoxSpec, error) {
-	s := tsbox.BoxSpec{Name: name, Storage: b.Storage, Profile: b.Profile, Labels: map[string]string{}}
+	s := tsbox.BoxSpec{Name: name, Storage: b.Storage, Profile: b.Profile, Driver: b.Driver, Labels: map[string]string{}}
+	switch b.Driver {
+	case "", "auto", "gvisor", "firecracker", "dev":
+	default:
+		return s, fmt.Errorf("driver %q: allowed are auto, gvisor, firecracker and dev", b.Driver)
+	}
 	for k, v := range b.Labels {
 		if strings.HasPrefix(k, "tsbox.") {
 			return s, fmt.Errorf("label %q: the prefix tsbox. is reserved", k)

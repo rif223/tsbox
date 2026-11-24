@@ -2,6 +2,9 @@ package gvisor
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -113,5 +116,52 @@ func TestPlatform(t *testing.T) {
 	}
 	if _, err := New(Config{Platform: "kvm", RootFS: "/x", StateDir: "/y"}); err == nil {
 		t.Fatal("New with kvm without device")
+	}
+}
+
+// fakeRunsc writes a runsc stand-in that fails for the platforms in bad.
+func fakeRunsc(t *testing.T, bad string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "runsc")
+	script := "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --platform=" + bad + ") echo 'starting sandbox: creating process: out of memory' >&2; exit 1;; esac; done\nexit 0\n"
+	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// A platform counts only if a test sandbox starts; without an explicit platform systrap falls back to kvm.
+func TestChoosePlatform(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("shell script as runsc")
+	}
+	old := KVMDevice
+	defer func() { KVMDevice = old }()
+	KVMDevice = filepath.Join(t.TempDir(), "kvm")
+	if err := os.WriteFile(KVMDevice, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{Runsc: fakeRunsc(t, "systrap"), StateDir: t.TempDir(), Platform: "systrap"}
+	p, note, err := choosePlatform(cfg, true)
+	if err != nil || p != "kvm" || !strings.Contains(note, "out of memory") {
+		t.Fatalf("fallback: %q %q %v", p, note, err)
+	}
+	if _, _, err := choosePlatform(cfg, false); err == nil || !strings.Contains(err.Error(), "systrap") {
+		t.Fatalf("explicit systrap: %v", err)
+	}
+
+	cfg = Config{Runsc: fakeRunsc(t, "nothing"), StateDir: t.TempDir(), Platform: "systrap"}
+	if p, note, err := choosePlatform(cfg, true); err != nil || p != "systrap" || note != "" {
+		t.Fatalf("systrap works: %q %q %v", p, note, err)
+	}
+
+	cfg = Config{Runsc: fakeRunsc(t, "*"), StateDir: t.TempDir(), Platform: "systrap"}
+	if _, _, err := choosePlatform(cfg, true); err == nil {
+		t.Fatal("no platform works, but no error")
+	}
+	t.Setenv("TSBOX_GVISOR_PROBE", "0")
+	if p, _, err := choosePlatform(cfg, true); err != nil || p != "systrap" {
+		t.Fatalf("probe off: %q %v", p, err)
 	}
 }

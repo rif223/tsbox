@@ -16,6 +16,7 @@ import (
 	"github.com/rif223/tsbox/client"
 	"github.com/rif223/tsbox/internal/daemon"
 	"github.com/rif223/tsbox/internal/denobin"
+	"github.com/rif223/tsbox/internal/driver"
 	"github.com/rif223/tsbox/internal/driver/firecracker"
 	"github.com/rif223/tsbox/internal/driver/gvisor"
 	"github.com/rif223/tsbox/internal/profile"
@@ -78,6 +79,11 @@ func doctorCmd(args []string) int {
 		isolated = doctorLinux(&c, root, state)
 	} else {
 		c.warn("isolation", "on "+runtime.GOOS+" there is only the dev driver (NO isolation)")
+		if s := detectService(); s.Installed {
+			c.ok("service", s.What)
+		} else {
+			c.warn("service", "not set up: tsboxd starts on demand and ends when idle (\"tsbox setup\" makes it permanent)")
+		}
 	}
 
 	doctorDaemon(&c)
@@ -96,6 +102,11 @@ func doctorCmd(args []string) int {
 }
 
 func doctorLinux(c *checker, root bool, state string) []string {
+	if err := driver.CheckArch("gVisor and Firecracker"); err != nil {
+		c.warn("platform", err.Error())
+	} else if driver.WSL() {
+		c.ok("platform", "WSL2, kernel "+driver.KernelRelease())
+	}
 	runsc, err := exec.LookPath("runsc")
 	if err != nil {
 		c.warn("runsc", "not in PATH (install gVisor: https://gvisor.dev/docs/user_guide/install/)")
@@ -151,7 +162,7 @@ func doctorLinux(c *checker, root bool, state string) []string {
 			f.Close()
 			c.ok("KVM", gvisor.KVMDevice+" usable (TSBOX_PLATFORM=kvm or tsbox daemon --platform kvm)")
 		} else {
-			c.ok("KVM", "not available, gVisor uses systrap ("+err.Error()+")")
+			c.ok("KVM", "not available, gVisor uses systrap ("+err.Error()+"); for KVM: "+driver.KVMHint())
 		}
 	}
 
@@ -161,10 +172,13 @@ func doctorLinux(c *checker, root bool, state string) []string {
 		return nil
 	}
 	var usable []string
-	if _, err := gvisor.New(gvisor.Config{RootFS: rfs, StateDir: filepath.Join(state, "gvisor"), Platform: os.Getenv("TSBOX_PLATFORM")}); err != nil {
+	if g, err := gvisor.New(gvisor.Config{RootFS: rfs, StateDir: filepath.Join(state, "gvisor"), Platform: os.Getenv("TSBOX_PLATFORM")}); err != nil {
 		c.warn("isolation", err.Error())
+	} else if g.Note() != "" {
+		c.ok("isolation", "gVisor usable ("+g.Note()+")")
+		usable = append(usable, "gvisor")
 	} else {
-		c.ok("isolation", "gVisor usable")
+		c.ok("isolation", "gVisor usable (platform "+g.Platform()+", a test sandbox started)")
 		usable = append(usable, "gvisor")
 	}
 	if fcUsable {
@@ -220,7 +234,7 @@ func doctorFirecracker(c *checker, root bool, rfs, state string) bool {
 		c.warn("isolation", err.Error())
 		return false
 	}
-	c.ok("isolation", "Firecracker usable (TSBOX_DRIVER=firecracker or tsbox daemon --driver firecracker)")
+	c.ok("isolation", "Firecracker usable (per box: --driver firecracker or \"driver\" in tsbox.json)")
 	return true
 }
 
@@ -246,11 +260,24 @@ func doctorDaemon(c *checker) {
 		if perr != nil {
 			perm = perr.Error()
 		}
-		c.ok("tsboxd", fmt.Sprintf("%s, PID %d, %s daemon, driver %s, %d/%d boxes running", info.Version, info.PID, info.Mode, info.Driver, info.Running, info.Boxes))
+		c.ok("tsboxd", fmt.Sprintf("%s, PID %d, %s daemon, default driver %s, %d/%d boxes running", info.Version, info.PID, info.Mode, info.Driver, info.Running, info.Boxes))
+		for _, d := range info.Drivers {
+			if d.Available && d.Note != "" {
+				c.ok("driver "+d.Name, "usable by tsboxd ("+d.Note+")")
+			} else if d.Available {
+				c.ok("driver "+d.Name, "usable by tsboxd")
+			} else {
+				c.warn("driver "+d.Name, "not usable by tsboxd: "+d.Error)
+			}
+		}
 		c.ok("socket", sock+" "+perm)
 		return
 	}
-	if autostartAllowed() {
+	if s := detectService(); serviceBlocksAutostart(s) && !serviceManagesProcess {
+		c.ok("tsboxd", "not running; starts at the next logon or with the next command ("+s.Start+")")
+	} else if serviceBlocksAutostart(s) {
+		c.warn("tsboxd", "set up ("+s.What+") but not running; start it: "+s.Start)
+	} else if autostartAllowed() {
 		c.ok("tsboxd", "not running; the CLI starts it on demand (TSBOX_NO_AUTOSTART=1 turns this off)")
 	} else {
 		c.warn("tsboxd", "not running and autostart is off")
@@ -282,13 +309,16 @@ func setupCmd(args []string) int {
 	noSystemd := fs.Bool("no-systemd", false, "no systemd unit")
 	withFC := fs.Bool("firecracker", false, "also install the firecracker binary and the guest kernel (optional driver)")
 	force := fs.Bool("force", false, "replace an existing systemd unit that differs")
-	usageFor(fs, "setup [--dry-run] [--no-rootfs] [--no-systemd] [--firecracker] [--force]")
+	remove := fs.Bool("remove", false, "stop tsboxd and remove what starts it (systemd unit, logon entry, LaunchAgent); boxes, rootfs and group stay")
+	usageFor(fs, "setup [--dry-run] [--no-rootfs] [--no-systemd] [--firecracker] [--force] | setup --remove [--dry-run]")
 	if _, ok := parsePos(fs, args, 0, 0); !ok {
 		return 2
 	}
+	if *remove {
+		return setupRemove(*dry)
+	}
 	if runtime.GOOS != "linux" {
-		fmt.Printf("Nothing to set up on %s: tsbox uses the dev driver (NO isolation) and starts tsboxd itself on demand.\n\n", runtime.GOOS)
-		return doctorCmd(nil)
+		return setupUserService(*dry)
 	}
 	if os.Geteuid() != 0 && !*dry {
 		fmt.Fprintln(os.Stderr, "tsbox setup: please run as root (sudo)")

@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,19 +38,28 @@ type Config struct {
 	RootFS       string // read-only rootfs with /usr/local/bin/deno
 	StateDir     string // bundles, runsc state, copies of tsbox-init
 	CgroupParent string // default "/tsbox"
-	Platform     string // "systrap" (default) or "kvm"
+	// Platform is "systrap" or "kvm". Empty: systrap, or kvm if systrap cannot start a sandbox on this host
+	// (found: WSL2 kernel 6.6) and kvm can.
+	Platform string
 }
 
-type Driver struct{ cfg Config }
+type Driver struct {
+	cfg  Config
+	note string // why the platform was chosen, if not the default
+}
 
 func New(cfg Config) (*Driver, error) {
 	if cfg.Runsc == "" {
 		cfg.Runsc = "runsc"
 	}
-	if cfg.Platform == "" {
+	auto := cfg.Platform == ""
+	if auto {
 		cfg.Platform = "systrap"
 	}
 	if err := checkPlatform(cfg.Platform); err != nil {
+		return nil, err
+	}
+	if err := driver.CheckArch("gvisor"); err != nil {
 		return nil, err
 	}
 	if cfg.CgroupParent == "" {
@@ -69,7 +79,78 @@ func New(cfg Config) (*Driver, error) {
 	if os.Geteuid() != 0 {
 		return nil, errors.New("gvisor: runsc needs root (cgroups, namespaces)")
 	}
-	return &Driver{cfg: cfg}, nil
+	d := &Driver{cfg: cfg}
+	if d.cfg.Platform, d.note, err = choosePlatform(cfg, auto); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// choosePlatform checks with a test sandbox that the platform works. Without an explicit platform it falls back
+// from systrap to kvm when only kvm works; the note says why.
+func choosePlatform(cfg Config, auto bool) (platform, note string, err error) {
+	err = probe(cfg, cfg.Platform)
+	if err == nil {
+		return cfg.Platform, "", nil
+	}
+	if !auto || checkPlatform("kvm") != nil || probe(cfg, "kvm") != nil {
+		return "", "", err
+	}
+	why := strings.TrimPrefix(err.Error(), "gvisor: runsc cannot start a sandbox with platform systrap: ")
+	return "kvm", "platform kvm, systrap fails here: " + why, nil
+}
+
+// Note explains a platform choice that differs from the default ("" otherwise).
+func (d *Driver) Note() string { return d.note }
+
+var probes struct {
+	sync.Mutex
+	done map[string]error
+}
+
+// probe checks once per runsc binary and platform that runsc really starts a sandbox: runsc being installed
+// is not enough (found: systrap fails with "out of memory" on a WSL2 kernel 6.6 with 31 GiB free).
+// TSBOX_GVISOR_PROBE=0 skips it.
+func probe(cfg Config, platform string) error {
+	if os.Getenv("TSBOX_GVISOR_PROBE") == "0" {
+		return nil
+	}
+	key := cfg.Runsc + "|" + platform
+	if st, err := os.Stat(cfg.Runsc); err == nil {
+		key += fmt.Sprintf("|%d|%d", st.Size(), st.ModTime().UnixNano())
+	}
+	probes.Lock()
+	defer probes.Unlock()
+	if err, ok := probes.done[key]; ok {
+		return err
+	}
+	root, err := "", os.MkdirAll(cfg.StateDir, 0o700)
+	if err == nil {
+		root, err = os.MkdirTemp(cfg.StateDir, "probe-")
+	}
+	if err == nil {
+		defer os.RemoveAll(root)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		var out []byte
+		out, err = exec.CommandContext(ctx, cfg.Runsc, "--root="+root, "--network=none", "--platform="+platform,
+			"do", "/bin/true").CombinedOutput()
+		if err != nil {
+			msg := strings.TrimSpace(string(out))
+			if i := strings.LastIndexByte(msg, '\n'); i >= 0 {
+				msg = msg[i+1:]
+			}
+			if msg == "" {
+				msg = err.Error()
+			}
+			err = fmt.Errorf("gvisor: runsc cannot start a sandbox with platform %s: %s", platform, msg)
+		}
+	}
+	if probes.done == nil {
+		probes.done = map[string]error{}
+	}
+	probes.done[key] = err
+	return err
 }
 
 func (d *Driver) Name() string   { return "gvisor" }
@@ -249,7 +330,7 @@ func checkPlatform(p string) error {
 	case "kvm":
 		f, err := os.OpenFile(KVMDevice, os.O_RDWR, 0)
 		if err != nil {
-			return fmt.Errorf("gvisor: platform kvm needs %s (%v); without KVM use platform systrap", KVMDevice, err)
+			return fmt.Errorf("gvisor: platform kvm needs %s (%v; %s); without KVM use platform systrap", KVMDevice, err, driver.KVMHint())
 		}
 		f.Close()
 		return nil

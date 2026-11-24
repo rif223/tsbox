@@ -29,18 +29,21 @@ func daemonCmd(args []string) int {
 	if len(args) > 0 && args[0] == "stop" {
 		return daemonStop(args[1:])
 	}
+	if len(args) > 0 && args[0] == "start" {
+		return daemonStart(args[1:])
+	}
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	system := fs.Bool("system", false, "system daemon (Linux, root): socket "+client.SystemSocket+" for the group --group")
 	socket := fs.String("socket", "", "path of the socket (default: system or user socket)")
 	group := fs.String("group", "tsbox", "group with access to the system socket (corresponds to the docker group)")
 	idle := fs.Duration("idle", 0, "exit after this much idle time (0 = never)")
 	auto := fs.Bool("autostarted", false, "started by the CLI (internal)")
-	drv := fs.String("driver", envOr("TSBOX_DRIVER", "auto"), "driver: auto | gvisor | firecracker | dev (TSBOX_DRIVER sets the default)")
+	drv := fs.String("driver", envOr("TSBOX_DRIVER", "auto"), "default driver for boxes without their own: auto | gvisor | firecracker | dev (default: TSBOX_DRIVER)")
 	fcJailer := fs.String("fc-jailer", "", "firecracker: run every VMM under the jailer (path, or 1 = jailer from PATH; default: TSBOX_FC_JAILER)")
 	fcKernel := fs.String("fc-kernel", "", "guest kernel of the firecracker driver (default: TSBOX_FC_KERNEL or "+tsbox.DefaultFirecrackerKernel+")")
 	rootfs := fs.String("rootfs", "", "rootfs for gVisor (profile default; default: TSBOX_ROOTFS)")
 	profiles := fs.String("profiles", "", "directory of named profiles (default: TSBOX_PROFILES or /var/lib/tsbox/profiles)")
-	platform := fs.String("platform", "", "gVisor platform: systrap | kvm (default: TSBOX_PLATFORM or systrap)")
+	platform := fs.String("platform", "", "gVisor platform: systrap | kvm (default: TSBOX_PLATFORM, else systrap, or kvm where systrap cannot start a sandbox)")
 	oomAdj := fs.Int("oom-score-adj", tsbox.DefaultOOMScoreAdj, "oom_score_adj of the box processes (Linux; 0 = unchanged)")
 	usageFor(fs, "daemon [flags] | daemon stop [-f]   (tsboxd: local API for ps, logs, stats, ...)")
 	if _, ok := parsePos(fs, args, 0, 0); !ok {
@@ -146,14 +149,29 @@ func connect(ctx context.Context) (*client.Client, client.Info, error) {
 		}
 		return nil, client.Info{}, fmt.Errorf("tsboxd not reachable%s. Start it with %s (autostart is off)", hint, start)
 	}
-	host := hosts[len(hosts)-1]
+	// A daemon set up with "tsbox setup" is the daemon of this state: starting a second one here would put boxes
+	// where nobody looks for them.
+	// On Windows the logon entry only runs "tsbox daemon start" for the same state, so the CLI does exactly
+	// that (a permanent daemon); systemd and launchd own their daemon, the CLI must not start another.
+	if s := detectService(); serviceBlocksAutostart(s) {
+		if serviceManagesProcess {
+			return nil, client.Info{}, notRunningError(s, hint)
+		}
+		return startDaemon(ctx, hosts[len(hosts)-1], true)
+	}
+	return startDaemon(ctx, hosts[len(hosts)-1], false)
+}
+
+// startDaemon starts a user daemon in the background and waits until it answers. service: permanent (no idle
+// exit, not replaced by another CLI version), as "tsbox daemon start" and the logon entry start it.
+func startDaemon(ctx context.Context, host string, service bool) (*client.Client, client.Info, error) {
 	sock, _ := client.SocketPath(host)
 	logPath := filepath.Join(tsbox.DefaultStateDir(), "tsboxd.log")
 	var logStart int64
 	if st, err := os.Stat(logPath); err == nil {
 		logStart = st.Size()
 	}
-	exited, err := spawnDaemon(sock)
+	exited, err := spawnDaemon(sock, service)
 	if err != nil {
 		return nil, client.Info{}, fmt.Errorf("starting tsboxd: %w", err)
 	}
@@ -191,6 +209,51 @@ func lastLogLine(path string, offset int64) string {
 	}
 	lines := strings.Split(strings.TrimSpace(string(b[offset:])), "\n")
 	return strings.TrimSpace(lines[len(lines)-1])
+}
+
+// daemonStart: tsbox daemon start starts the user daemon in the background without idle exit (Windows starts
+// it like this at logon after "tsbox setup"). On Linux the system daemon belongs to systemd.
+func daemonStart(args []string) int {
+	fs := flag.NewFlagSet("daemon start", flag.ContinueOnError)
+	usageFor(fs, "daemon start")
+	if _, ok := parsePos(fs, args, 0, 0); !ok {
+		return 2
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	hosts := client.Hosts()
+	for _, h := range hosts {
+		c, err := client.New(h)
+		if err != nil {
+			continue
+		}
+		info, err := ping(ctx, c)
+		if err != nil {
+			c.Close()
+			continue
+		}
+		if !info.Autostarted || info.Running > 0 {
+			c.Close()
+			fmt.Printf("tsboxd is running (PID %d, %s daemon)\n", info.PID, info.Mode)
+			return 0
+		}
+		// An autostarted daemon would end when idle: replace it with a permanent one.
+		_ = c.Shutdown(ctx)
+		waitGone(ctx, c)
+		c.Close()
+	}
+	if s := detectService(); serviceManagesProcess && serviceBlocksAutostart(s) {
+		fmt.Fprintf(os.Stderr, "tsbox: tsboxd is managed by the %s: %s\n", s.What, s.Start)
+		return 1
+	}
+	c, info, err := startDaemon(ctx, hosts[len(hosts)-1], true)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "tsbox:", err)
+		return 1
+	}
+	c.Close()
+	fmt.Printf("tsboxd started (PID %d)\n", info.PID)
+	return 0
 }
 
 // daemonStop: tsbox daemon stop [-f] ends the user daemon (the system daemon belongs to systemd).
@@ -255,7 +318,7 @@ func waitGone(ctx context.Context, c *client.Client) {
 
 // spawnDaemon starts "tsbox daemon --autostarted" detached; output to <state>/tsboxd.log. The channel is
 // closed when the daemon process ends (only relevant while the CLI waits for it).
-func spawnDaemon(sock string) (<-chan struct{}, error) {
+func spawnDaemon(sock string, service bool) (<-chan struct{}, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -280,8 +343,12 @@ func spawnDaemon(sock string) (<-chan struct{}, error) {
 			idle = d
 		}
 	}
+	args := []string{"daemon", "--autostarted", "--idle", idle.String(), "--socket", sock}
+	if service {
+		args = []string{"daemon", "--idle", "0", "--socket", sock}
+	}
 	cmd, err := startDetached(func() *exec.Cmd {
-		cmd := exec.Command(exe, "daemon", "--autostarted", "--idle", idle.String(), "--socket", sock)
+		cmd := exec.Command(exe, args...)
 		cmd.Stdout, cmd.Stderr = lf, lf
 		cmd.Dir = state
 		return cmd

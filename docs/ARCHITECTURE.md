@@ -83,8 +83,9 @@ tsbox inspect <box> …                          # JSON without secret values
 tsbox events [--since] [--box] [--json]
 tsbox up [-d] [-f tsbox.json] | down [-f tsbox.json]
 tsbox daemon [--system] [--socket] [--idle 0] [--driver] [--rootfs] [--profiles] [--platform systrap|kvm] [--fc-kernel] [--fc-jailer] [--oom-score-adj 500] [--group tsbox]   # tsboxd
+tsbox daemon start                       # user daemon in the background without idle exit
 tsbox daemon stop [-f]                   # end the user daemon (-f: also with running boxes)
-tsbox doctor | setup [--dry-run] [--no-rootfs] [--no-systemd] [--firecracker] [--force]
+tsbox doctor | setup [--dry-run] [--no-rootfs] [--no-systemd] [--firecracker] [--force] | setup --remove
 tsbox check <script.ts> [--sdk …]       # build with type checking and SDK checks, without starting
 tsbox types [--sdk …]                   # deno.json + .tsbox/types for the editor
 tsbox sdk ls | info <sdk> | add <path|git+url#ref> | rm <name> | init <name> [--provider deno|go] | test <path>
@@ -93,11 +94,21 @@ tsbox version
 
 **Daemon:** All box commands (including `run` in the foreground) talk to tsboxd; `check`, `types` and `sdk` work
 locally. The CLI tries `TSBOX_HOST`, on Linux `/run/tsbox/tsboxd.sock` (system daemon), and then the user
-daemon. If none answers, it starts `tsbox daemon --autostarted --idle 5m` detached (output to
+daemon. `tsbox setup` makes tsboxd permanent: systemd unit on Linux, `HKCU\...\Run\tsboxd` (`tsbox daemon
+start`, which starts it without a window and returns) on Windows, LaunchAgent `dev.tsbox.tsboxd` on macOS
+(restarted only after a crash, so `daemon stop` stops it). If such a service is set up for the default state
+but not reachable, the CLI reports how to start it and does not start a daemon of its own (Windows: it runs what
+the logon entry runs, a permanent daemon of the same state). If no service is
+set up and none answers, it starts `tsbox daemon --autostarted --idle 5m` detached (output to
 `<state>/tsboxd.log`); it exits after 5 min without a running box and without a connection (`TSBOX_IDLE`).
 `TSBOX_NO_AUTOSTART=1` turns this off. An autostarted daemon of a different build is replaced as long as no box
-is running. The daemon chooses driver and rootfs (`TSBOX_DRIVER`, `TSBOX_ROOTFS`); `run --driver` only checks
-that it matches; to switch, `tsbox daemon stop` and start again with another `TSBOX_DRIVER`. If an autostarted
+is running. Each box has its own driver (`BoxSpec.Driver`, `run --driver`, `"driver"` in `tsbox.json`); the engine loads a
+driver when the first box needs it and retries a failed load after 30 s. Boxes without a driver get the daemon's
+default (`TSBOX_DRIVER`); creating a box writes the driver into its stored specification, so it keeps it if the
+default changes. A driver that cannot be loaded fails only the boxes that ask for it. Builds run with the box's
+driver (build sandbox for gvisor/firecracker); isolating and other builds have separate slot limits. The rootfs is
+the daemon's (`TSBOX_ROOTFS`). `GET /v1/info` reports the default as `driver` and all drivers as `drivers`; a CLI
+talking to an older daemon without `drivers` still only checks that `--driver` matches. If an autostarted
 daemon ends right away (e.g. `runsc` missing), the CLI shows its error at once instead of waiting.
 
 | Address | Linux/macOS | Windows |
@@ -133,6 +144,7 @@ After a restart of the daemon, `tsbox start` passes them again.
       "restart": "on-failure:5",
       "storage": "bot",
       "profile": "default",
+      "driver": "gvisor",
       "labels": {
         "team": "a"
       },
@@ -218,7 +230,7 @@ for m, err := range c.Attach(ctx, client.CreateRequest{Spec: spec}) { … } // l
 - **Exit reasons:** `exit`, `crash`, `heap`, `rss`, `threads`, `oom`, `watchdog`, `timeout`, `integrity`, `protocol`, `backpressure`, `spawn_failed`, `killed`, `stopped`, `box_hung`, `box_died`, `box_shutdown`.
 - **Restart policy:** `no` | `on-failure` | `always`, backoff 1 s · 2^(n−1) up to 60 s. Circuit breaker: n failures in 10 min ⇒ `broken`. `integrity` and `protocol` never restart; a hung or dead box is quarantined.
 - **Profiles and host OOM:** `BoxSpec.Profile` selects the rootfs (gVisor only; `WithRootFS` = `default`, `WithProfilesDir` for others, `Engine.Profiles()` lists them with their fingerprint). `WithOOMScoreAdj` (default 500) applies to the host processes of every box.
-- **Build cache and platform:** unchanged scripts are not rebuilt (key over script directory, SDK modules, core, Deno version; `WithoutBuildCache()` turns it off). Real builds of an engine are limited (dev 4, gVisor and Firecracker 2); store entries unused for 7 days are removed. `WithGVisorPlatform("kvm")` or `TSBOX_PLATFORM` selects the gVisor platform (needs `/dev/kvm`).
+- **Build cache and platform:** unchanged scripts are not rebuilt (key over script directory, SDK modules, core, Deno version; `WithoutBuildCache()` turns it off). Real builds of an engine are limited (dev 4, gVisor and Firecracker 2); store entries unused for 7 days are removed. `WithGVisorPlatform("kvm")` or `TSBOX_PLATFORM` selects the gVisor platform (needs `/dev/kvm`). Without it the driver uses systrap, or kvm if a test sandbox shows that only kvm works on this host.
 - **CPU boost at start (opt-in):** `Limits.StartCPU` (`--start-cpu`, `"startCpu"`) lets the box start with more CPU until all scripts are ready or have ended (at most 30 s); after that `Limits.CPU` applies. If the reset fails, the box is ended. Works under gVisor (cgroup `cpu.max`) and dev on Windows (job object).
 
 ## 5. Protocol v2

@@ -134,7 +134,7 @@ func (d *Daemon) hInfo(w http.ResponseWriter, _ *http.Request) {
 	}
 	writeJSON(w, 200, client.Info{Version: tsbox.Version, API: client.APIVersion, Build: d.build, PID: os.Getpid(),
 		Mode: mode, Autostarted: d.cfg.Autostarted, Idle: idle, Driver: d.e.DriverName(), Isolated: d.e.Isolated(),
-		StateDir: d.cfg.StateDir, Socket: d.cfg.Socket, Running: d.running(), Boxes: len(d.records())})
+		Drivers: d.e.Drivers(), StateDir: d.cfg.StateDir, Socket: d.cfg.Socket, Running: d.running(), Boxes: len(d.records())})
 }
 
 func (d *Daemon) hList(w http.ResponseWriter, r *http.Request) {

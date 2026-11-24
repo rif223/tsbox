@@ -141,6 +141,9 @@ func Run(ctx context.Context, cfg Config) error {
 	srvErr := make(chan error, 1)
 	go func() { srvErr <- srv.Serve(ln) }()
 	d.log.Info("tsboxd ready", "socket", cfg.Socket, "state", cfg.StateDir, "driver", e.DriverName(), "idle", cfg.Idle)
+	for _, di := range e.Drivers() {
+		d.log.Info("driver", "name", di.Name, "default", di.Default, "available", di.Available, "reason", di.Error, "note", di.Note)
+	}
 
 	idle := time.NewTicker(time.Second)
 	defer idle.Stop()
@@ -247,6 +250,14 @@ func (d *Daemon) get(name string) (*record, error) {
 	return r, nil
 }
 
+// driverOf is the driver a box uses: its own, or the default for boxes stored before drivers per box.
+func (d *Daemon) driverOf(spec tsbox.BoxSpec) string {
+	if spec.Driver != "" && spec.Driver != "auto" {
+		return spec.Driver
+	}
+	return d.e.DriverName()
+}
+
 // view is the view for ps/inspect.
 func (r *record) view(d *Daemon) client.Box {
 	r.mu.Lock()
@@ -258,7 +269,8 @@ func (r *record) view(d *Daemon) client.Box {
 	case r.last != nil:
 		st = *r.last
 	default:
-		st = tsbox.BoxStatus{Name: r.name, Driver: d.e.DriverName(), Isolated: d.e.Isolated(), State: tsbox.BoxCreated,
+		drv := d.driverOf(r.spec)
+		st = tsbox.BoxStatus{Name: r.name, Driver: drv, Isolated: drv != "dev", State: tsbox.BoxCreated,
 			Limits: r.spec.Limits, Labels: r.spec.Labels}
 		for _, s := range r.spec.Scripts {
 			st.Scripts = append(st.Scripts, tsbox.ScriptStatus{Name: s.Name, State: tsbox.ScriptPending})
@@ -397,7 +409,7 @@ func (d *Daemon) start(ctx context.Context, r *record, env map[string]string) er
 		nb, err := d.e.Create(ctx, withEnv(spec, envCopy))
 		if err != nil {
 			r.mu.Lock()
-			st := tsbox.BoxStatus{Name: r.name, Driver: d.e.DriverName(), State: tsbox.BoxFailed, Error: err.Error(), Limits: spec.Limits, Labels: spec.Labels}
+			st := tsbox.BoxStatus{Name: r.name, Driver: d.driverOf(spec), State: tsbox.BoxFailed, Error: err.Error(), Limits: spec.Limits, Labels: spec.Labels}
 			r.last = &st
 			d.save(r)
 			r.mu.Unlock()

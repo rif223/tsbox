@@ -620,3 +620,65 @@ func TestSDKLifecycle(t *testing.T) {
 		t.Fatalf("sdk rm kv: %d %q", code, errs)
 	}
 }
+
+// TestRunDriver: --driver picks the box's driver, the daemon lists its drivers, and a stored box keeps its
+// driver over a daemon restart.
+func TestRunDriver(t *testing.T) {
+	c := newCLI(t)
+	c.ok("run", "-d", "--name", "pick", "--driver", "dev", "--restart", "always", "testdata/scripts/service.ts")
+	if b := c.waitState("pick", tsbox.BoxRunning); b.Driver != "dev" {
+		t.Fatalf("box: %+v", b)
+	}
+	info, err := c.client().Info(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dev bool
+	for _, d := range info.Drivers {
+		dev = dev || (d.Name == "dev" && d.Available)
+	}
+	if !dev {
+		t.Fatalf("drivers: %+v", info.Drivers)
+	}
+	if raw, err := os.ReadFile(filepath.Join(c.state, "boxes", "pick", "tsboxd.json")); err != nil || !strings.Contains(string(raw), `"driver": "dev"`) {
+		t.Fatalf("stored spec without driver: %v %s", err, raw)
+	}
+	c.shutdown()
+	if b := c.waitState("pick", tsbox.BoxRunning); b.Driver != "dev" {
+		t.Fatalf("after restart: %+v", b)
+	}
+	if runtime.GOOS != "linux" {
+		_, stderr, code := c.run("run", "-d", "--name", "nope", "--driver", "gvisor", "testdata/scripts/service.ts")
+		if code == 0 || !strings.Contains(stderr, "gvisor") {
+			t.Fatalf("gvisor on %s: %d %s", runtime.GOOS, code, stderr)
+		}
+	}
+	if _, stderr, code := c.run("run", "--driver", "docker", "testdata/scripts/service.ts"); code != 2 || !strings.Contains(stderr, "docker") {
+		t.Fatalf("unknown driver: %d %s", code, stderr)
+	}
+}
+
+// TestDaemonStart: "tsbox daemon start" starts a permanent daemon (no idle exit, not replaced by another
+// build) and leaves a running one alone; "tsbox setup --remove" without a service changes nothing.
+func TestDaemonStart(t *testing.T) {
+	c := newCLI(t)
+	if out := c.ok("daemon", "start"); !strings.Contains(out, "started") {
+		t.Fatalf("start: %s", out)
+	}
+	info, err := c.client().Info(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Autostarted || info.Idle != "" {
+		t.Fatalf("not permanent: %+v", info)
+	}
+	if out := c.ok("daemon", "start"); !strings.Contains(out, "running") {
+		t.Fatalf("second start: %s", out)
+	}
+	if again, _ := c.client().Info(context.Background()); again.PID != info.PID {
+		t.Fatalf("restarted: %d -> %d", info.PID, again.PID)
+	}
+	c.ok("run", "-d", "--name", "svc", "testdata/scripts/service.ts")
+	c.waitState("svc", tsbox.BoxRunning)
+	c.ok("daemon", "stop", "-f")
+}

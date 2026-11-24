@@ -87,11 +87,15 @@ jobs:
           fi
 
   # E2E with the opt-in firecracker driver (needs KVM): firecracker, jailer and the guest kernel via
-  # "tsbox setup --firecracker" (SHA-256 / configuration checked), rootfs as for gVisor. Without /dev/kvm on
-  # the runner the job only reports that.
+  # "tsbox setup --firecracker" (SHA-256 / configuration checked), rootfs as for gVisor. runsc is installed as
+  # well, so gVisor and Firecracker boxes also run side by side in one engine (driver per box). Without
+  # /dev/kvm on the runner the job only reports that.
   firecracker:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    env:
+      RUNSC_VERSION: "20261026.0"
+      RUNSC_SHA256: fed7f0497aef8e3b9d91785d825ce71b063cb3ff4a102f25eb41c1b52f45eaae
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -112,6 +116,12 @@ jobs:
           sudo DENO="$(command -v deno)" bash scripts/build-rootfs.sh
           CGO_ENABLED=0 go build -o tsbox ./cmd/tsbox
           sudo env "PATH=$PATH" ./tsbox setup --firecracker --no-rootfs --no-systemd
+      - name: Install gVisor (runsc) for mixed drivers
+        if: steps.kvm.outputs.ok == '1'
+        run: |
+          curl -fsSL -o runsc.deb "https://storage.googleapis.com/gvisor/releases/pool/${RUNSC_VERSION}/binary-amd64/runsc.deb"
+          echo "${RUNSC_SHA256}  runsc.deb" | sha256sum -c -
+          sudo dpkg -i runsc.deb
       - name: E2E with Firecracker
         if: steps.kvm.outputs.ok == '1'
         run: sudo env "PATH=$PATH" "HOME=$HOME" "GOCACHE=$(go env GOCACHE)" "GOMODCACHE=$(go env GOMODCACHE)" TSBOX_DRIVERS=firecracker bash scripts/wsl-test.sh -v

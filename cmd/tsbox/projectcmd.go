@@ -69,8 +69,17 @@ func upCmd(args []string) int {
 	}
 	return withClient(func(ctx context.Context, c *client.Client) int {
 		info, _ := c.Info(ctx)
-		if !info.Isolated {
-			fmt.Fprintln(os.Stderr, "WARNING: driver \"dev\": NO isolation. Only for your own, trusted code.")
+		for _, r := range p.Boxes {
+			if err := checkDriver(info, r.Spec.Driver, ""); err != nil {
+				fmt.Fprintf(os.Stderr, "tsbox: %s: %v\n", r.Spec.Name, err)
+				return 1
+			}
+		}
+		for _, r := range p.Boxes {
+			if boxDriver(info, r.Spec.Driver) == "dev" {
+				fmt.Fprintln(os.Stderr, "WARNING: driver \"dev\": NO isolation. Only for your own, trusted code.")
+				break
+			}
 		}
 		existing, err := projectBoxes(ctx, c, p)
 		if err != nil {
@@ -81,6 +90,9 @@ func upCmd(args []string) int {
 		want := map[string]bool{}
 		for _, r := range p.Boxes {
 			spec := r.Spec
+			if len(info.Drivers) == 0 {
+				spec.Driver = "" // older daemon (see run)
+			}
 			want[spec.Name] = true
 			spec.Labels[client.LabelProject] = p.Name
 			spec.Labels[client.LabelService] = r.Key

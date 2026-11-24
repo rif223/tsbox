@@ -40,8 +40,9 @@ var boxName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,47}$`)
 
 // Box is a box with its scripts.
 type Box struct {
-	e    *Engine
-	spec BoxSpec
+	e      *Engine
+	driver driver.Driver // runs this box (spec.Driver)
+	spec   BoxSpec
 
 	mu        sync.Mutex
 	state     BoxState
@@ -136,6 +137,13 @@ func normalize(s BoxSpec) (BoxSpec, error) {
 	if err := profile.ValidName(s.Profile); err != nil {
 		return s, err
 	}
+	switch s.Driver {
+	case "", "gvisor", "firecracker", "dev":
+	case "auto":
+		s.Driver = ""
+	default:
+		return s, fmt.Errorf("unknown driver %q (auto, gvisor, firecracker, dev)", s.Driver)
+	}
 	seen := map[string]bool{}
 	for i := range s.Scripts {
 		sc := &s.Scripts[i]
@@ -195,8 +203,8 @@ func defaultPolicy(p RestartPolicy) RestartPolicy {
 	return p
 }
 
-func newBox(e *Engine, spec BoxSpec) *Box {
-	b := &Box{e: e, spec: spec, state: BoxCreated, scripts: map[string]*script{}, finished: make(chan struct{})}
+func newBox(e *Engine, spec BoxSpec, drv driver.Driver) *Box {
+	b := &Box{e: e, driver: drv, spec: spec, state: BoxCreated, scripts: map[string]*script{}, finished: make(chan struct{})}
 	for i, sc := range spec.Scripts {
 		p := spec.Restart
 		if sc.Restart != nil {
@@ -266,7 +274,7 @@ func buildParallel() int { return max(1, min(4, runtime.GOMAXPROCS(0))) }
 
 // buildScript builds one script and copies the artifact into adir. It writes only s.artifact.
 func (b *Box) buildScript(ctx context.Context, s *script, adir string) error {
-	a, err := b.e.bundle(ctx, s.spec.Entry, b.imports)
+	a, err := b.e.bundle(ctx, b.driver, s.spec.Entry, b.imports)
 	if err != nil {
 		return err
 	}
@@ -304,7 +312,7 @@ func (b *Box) Start(ctx context.Context) error {
 	gen := b.gen
 	b.mu.Unlock()
 
-	rootfs, phash, err := b.e.profileRootFS(b.spec.Profile)
+	rootfs, phash, err := b.e.profileRootFS(b.driver, b.spec.Profile)
 	if err != nil {
 		b.fail(BoxFailed, err.Error())
 		return err
@@ -317,7 +325,7 @@ func (b *Box) Start(ctx context.Context) error {
 	b.mu.Lock()
 	b.profileHash = phash
 	b.mu.Unlock()
-	drv, err := b.e.driver.Start(ctx, driver.Spec{
+	drv, err := b.driver.Start(ctx, driver.Spec{
 		ID: b.spec.Name, Limits: driver.Limits{MemoryBytes: b.spec.Limits.Memory, CPUCores: cpu, PIDs: b.spec.Limits.PIDs},
 		ArtifactsDir: filepath.Join(b.dir(), "artifacts"), Init: b.e.cfg.init, Deno: b.e.cfg.deno,
 		Stderr: &initLog{b: b}, RootFS: rootfs, OOMScoreAdj: b.e.cfg.oomAdj,
@@ -354,7 +362,7 @@ func (b *Box) Start(ctx context.Context) error {
 		b.startScriptLocked(b.scripts[name])
 	}
 	b.mu.Unlock()
-	b.e.emit(Event{At: time.Now(), Kind: EventBoxStarted, Box: b.spec.Name, Detail: b.e.driver.Name()})
+	b.e.emit(Event{At: time.Now(), Kind: EventBoxStarted, Box: b.spec.Name, Detail: b.driver.Name()})
 	go b.watchdog(drv, gen)
 	if boost {
 		go b.endStartBoost(drv, gen)
@@ -903,7 +911,7 @@ func (b *Box) Status() BoxStatus {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	st := BoxStatus{
-		Name: b.spec.Name, Driver: b.e.driver.Name(), Isolated: b.e.driver.Isolated(), State: b.state,
+		Name: b.spec.Name, Driver: b.driver.Name(), Isolated: b.driver.Isolated(), State: b.state,
 		Error: b.errMsg, Started: b.started, Limits: b.spec.Limits, Labels: b.spec.Labels,
 		SDKs: b.sdkInfo(), DroppedEvents: b.droppedEvents,
 	}

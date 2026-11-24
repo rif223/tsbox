@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -71,8 +72,8 @@ func WithLogFileSize(n int64) Option { return func(c *config) { c.logMax = n } }
 // WithStateDir sets the state directory (artifacts, boxes, runsc state).
 func WithStateDir(dir string) Option { return func(c *config) { c.stateDir = dir } }
 
-// WithDriver selects the driver: "auto" (default), "gvisor", "firecracker" or "dev". "auto" never chooses
-// firecracker.
+// WithDriver selects the default driver for boxes without BoxSpec.Driver: "auto" (default), "gvisor",
+// "firecracker" or "dev". "auto" never chooses firecracker. Other drivers are loaded when a box needs them.
 func WithDriver(name string) Option { return func(c *config) { c.driver = name } }
 
 // WithRequireIsolation forbids the dev driver (also via TSBOX_REQUIRE_ISOLATION=1).
@@ -143,10 +144,14 @@ func WithProvider(name string, p sdk.Provider) Option {
 // the SDKs of an embedding application.
 func WithSDKDir(dir string) Option { return func(c *config) { c.sdkDirs = append(c.sdkDirs, dir) } }
 
-// Engine manages boxes via a driver.
+// Engine manages boxes via drivers: the default driver and, loaded on first use, those boxes ask for.
 type Engine struct {
-	cfg    config
-	driver driver.Driver
+	cfg       config
+	defDriver driver.Driver
+
+	drvMu   sync.Mutex
+	drivers map[string]driver.Driver
+	drvErr  map[string]driverErr // failed loads, retried after driverRetry
 
 	events  chan Event
 	logs    chan LogLine
@@ -171,8 +176,8 @@ type Engine struct {
 	logwMu sync.Mutex
 	logw   map[string]*logfile.Writer
 
-	buildSlots chan struct{} // real builds of this engine at the same time
-	pruned     atomic.Int64  // UnixNano of the last cleanup of the artifact store
+	buildSlots map[bool]chan struct{} // real builds at the same time, per isolating (true) or not
+	pruned     atomic.Int64           // UnixNano of the last cleanup of the artifact store
 }
 
 // New creates an engine. Without WithDriver it chooses gvisor if it is usable (Linux, root, runsc,
@@ -251,7 +256,7 @@ func New(ctx context.Context, opts ...Option) (*Engine, error) {
 	if cfg.requireIsolation && !drv.Isolated() {
 		return nil, ErrNotIsolated
 	}
-	e := &Engine{cfg: cfg, driver: drv, boxes: map[string]*Box{}, reg: sdkreg.New(cfg.stateDir, cfg.sdkDirs...),
+	e := &Engine{cfg: cfg, defDriver: drv, drivers: map[string]driver.Driver{drv.Name(): drv}, drvErr: map[string]driverErr{}, boxes: map[string]*Box{}, reg: sdkreg.New(cfg.stateDir, cfg.sdkDirs...),
 		ext: map[string]*extproc.Provider{}, providers: map[string]sdk.Provider{
 			"log":  logprov.Provider{},
 			"kv":   kvprov.New(filepath.Join(cfg.stateDir, "kv")),
@@ -261,7 +266,7 @@ func New(ctx context.Context, opts ...Option) (*Engine, error) {
 		e.providers[name] = p
 	}
 	e.logw = map[string]*logfile.Writer{}
-	e.buildSlots = make(chan struct{}, buildSlots(e.driver.Isolated()))
+	e.buildSlots = map[bool]chan struct{}{true: make(chan struct{}, buildSlots(true)), false: make(chan struct{}, buildSlots(false))}
 	if !cfg.noLogFiles {
 		e.sink = make(chan sinkItem, 4096)
 		e.wg.Add(1)
@@ -352,9 +357,89 @@ func defaultStateDir() string {
 	return filepath.Join(home, ".local", "state", "tsbox")
 }
 
-// DriverName and Isolated describe the selected driver.
-func (e *Engine) DriverName() string { return e.driver.Name() }
-func (e *Engine) Isolated() bool     { return e.driver.Isolated() }
+// DriverName and Isolated describe the default driver (boxes without BoxSpec.Driver).
+func (e *Engine) DriverName() string { return e.defDriver.Name() }
+func (e *Engine) Isolated() bool     { return e.defDriver.Isolated() }
+
+// DriverNames are the drivers tsbox knows on this platform.
+func DriverNames() []string {
+	if runtime.GOOS == "linux" {
+		return []string{"gvisor", "firecracker", "dev"}
+	}
+	return []string{"dev"}
+}
+
+// DriverInfo describes a driver of the engine.
+type DriverInfo struct {
+	Name      string `json:"name"`
+	Isolated  bool   `json:"isolated"`
+	Default   bool   `json:"default,omitempty"`
+	Available bool   `json:"available"`
+	Error     string `json:"error,omitempty"` // why it is not available
+	Note      string `json:"note,omitempty"`  // e.g. why gVisor uses the kvm platform
+}
+
+// Drivers reports which drivers boxes can use. A driver that is not loaded yet is loaded to find out.
+func (e *Engine) Drivers() []DriverInfo {
+	var out []DriverInfo
+	for _, name := range DriverNames() {
+		di := DriverInfo{Name: name, Isolated: name != "dev", Default: name == e.defDriver.Name()}
+		d, err := e.driverFor(name)
+		if err != nil {
+			di.Error = err.Error()
+		} else {
+			di.Available = true
+			if n, ok := d.(interface{ Note() string }); ok {
+				di.Note = n.Note()
+			}
+		}
+		out = append(out, di)
+	}
+	return out
+}
+
+type driverErr struct {
+	err error
+	at  time.Time
+}
+
+// driverRetry: a driver that could not be loaded is tried again after this time (it may have been set up
+// in the meantime).
+const driverRetry = 30 * time.Second
+
+// driverFor returns a driver by name ("" and "auto": the default driver), loading it on first use.
+func (e *Engine) driverFor(name string) (driver.Driver, error) {
+	if name == "" || name == "auto" {
+		return e.defDriver, nil
+	}
+	e.drvMu.Lock()
+	defer e.drvMu.Unlock()
+	if d, ok := e.drivers[name]; ok {
+		return d, nil
+	}
+	if f, ok := e.drvErr[name]; ok && time.Since(f.at) < driverRetry {
+		return nil, f.err
+	}
+	if !slices.Contains(DriverNames(), name) {
+		return nil, fmt.Errorf("driver %q is not available on %s", name, runtime.GOOS)
+	}
+	cfg := e.cfg
+	cfg.driver = name
+	d, err := selectDriver(cfg)
+	if err == nil && cfg.requireIsolation && !d.Isolated() {
+		err = ErrNotIsolated
+	}
+	if err != nil {
+		if !strings.HasPrefix(err.Error(), name+": ") {
+			err = fmt.Errorf("%s: %w", name, err)
+		}
+		e.drvErr[name] = driverErr{err, time.Now()}
+		return nil, err
+	}
+	delete(e.drvErr, name)
+	e.drivers[name] = d
+	return d, nil
+}
 
 // DroppedEvents counts discarded events and logs (full queue).
 func (e *Engine) DroppedEvents() uint64 { return e.dropped.Load() }
@@ -374,7 +459,7 @@ func (e *Engine) Run(ctx context.Context, spec BoxSpec) (*Box, error) {
 
 // Create validates the specification and builds all scripts, but does not start the box yet.
 func (e *Engine) Create(ctx context.Context, spec BoxSpec) (*Box, error) {
-	spec, active, imports, err := e.prepareSpec(spec)
+	spec, drv, active, imports, err := e.prepareSpec(spec)
 	if err != nil {
 		return nil, err
 	}
@@ -383,7 +468,7 @@ func (e *Engine) Create(ctx context.Context, spec BoxSpec) (*Box, error) {
 		e.mu.Unlock()
 		return nil, fmt.Errorf("box %q already exists", spec.Name)
 	}
-	b := newBox(e, spec)
+	b := newBox(e, spec, drv)
 	b.sdks, b.imports = active, imports
 	e.boxes[spec.Name] = b
 	e.mu.Unlock()
@@ -394,17 +479,23 @@ func (e *Engine) Create(ctx context.Context, spec BoxSpec) (*Box, error) {
 	return b, nil
 }
 
-// prepareSpec validates a specification and resolves its profile and SDKs.
-func (e *Engine) prepareSpec(spec BoxSpec) (BoxSpec, map[string]*activeSDK, map[string]string, error) {
+// prepareSpec validates a specification and resolves its driver, profile and SDKs. The driver is written
+// into the specification, so a stored box keeps it even if the default changes.
+func (e *Engine) prepareSpec(spec BoxSpec) (BoxSpec, driver.Driver, map[string]*activeSDK, map[string]string, error) {
 	spec, err := normalize(spec)
 	if err != nil {
-		return spec, nil, nil, err
+		return spec, nil, nil, nil, err
 	}
-	if err := e.checkProfile(spec.Profile); err != nil {
-		return spec, nil, nil, err
+	drv, err := e.driverFor(spec.Driver)
+	if err != nil {
+		return spec, nil, nil, nil, err
+	}
+	spec.Driver = drv.Name()
+	if err := e.checkProfile(drv, spec.Profile); err != nil {
+		return spec, nil, nil, nil, err
 	}
 	active, imports, err := e.resolveSDKs(spec)
-	return spec, active, imports, err
+	return spec, drv, active, imports, err
 }
 
 func (e *Engine) forget(name string, b *Box) {
@@ -513,11 +604,11 @@ func (e *Engine) log(l LogLine) {
 // Check fully validates a box specification (SDKs, rights, configuration) and builds all scripts (with
 // type checking) without starting anything. Returns the artifact hashes per script.
 func (e *Engine) Check(ctx context.Context, spec BoxSpec) (map[string]string, error) {
-	spec, active, imports, err := e.prepareSpec(spec)
+	spec, drv, active, imports, err := e.prepareSpec(spec)
 	if err != nil {
 		return nil, err
 	}
-	b := newBox(e, spec)
+	b := newBox(e, spec, drv)
 	b.sdks, b.imports = active, imports
 	b.checkOnly = true
 	if err := b.build(ctx); err != nil {
@@ -530,14 +621,15 @@ func (e *Engine) Check(ctx context.Context, spec BoxSpec) (map[string]string, er
 	return out, nil
 }
 
-// bundle builds a script (gvisor/firecracker: in a build sandbox without network, otherwise on the host).
-func (e *Engine) bundle(ctx context.Context, entry string, imports map[string]string) (build.Artifact, error) {
+// bundle builds a script with the driver of its box (gvisor/firecracker: in a build sandbox without network,
+// otherwise on the host).
+func (e *Engine) bundle(ctx context.Context, drv driver.Driver, entry string, imports map[string]string) (build.Artifact, error) {
 	o := build.Options{Deno: e.cfg.deno, StoreDir: filepath.Join(e.cfg.stateDir, "artifacts"), Imports: imports,
-		NoCache: e.cfg.noBuildCache, Slots: e.buildSlots}
+		NoCache: e.cfg.noBuildCache, Slots: e.buildSlots[drv.Isolated()]}
 	deno := e.cfg.deno
 	// Under gVisor the build runs in its own sandbox without network; dev builds on the host with
 	// --no-remote --no-npm.
-	if sd, ok := e.driver.(sandboxBuilder); ok {
+	if sd, ok := drv.(sandboxBuilder); ok {
 		e.cacheMu.Lock()
 		err := sd.EnsureBuildCache(ctx)
 		e.cacheMu.Unlock()
@@ -553,8 +645,8 @@ func (e *Engine) bundle(ctx context.Context, entry string, imports map[string]st
 	return a, err
 }
 
-// buildSlots is the number of builds an engine runs at the same time. A build in a sandbox or microVM may
-// use up to 768 MiB, so isolating drivers run fewer of them.
+// buildSlots is the number of builds an engine runs at the same time, for isolating drivers and for the
+// others separately. A build in a sandbox or microVM may use up to 768 MiB, so isolating drivers run fewer.
 func buildSlots(isolated bool) int {
 	if isolated {
 		return min(2, max(1, runtime.GOMAXPROCS(0)))
@@ -580,8 +672,8 @@ type sandboxBuilder interface {
 	RootDeno() string
 }
 
-func (e *Engine) usesProfiles() bool {
-	_, ok := e.driver.(sandboxBuilder)
+func usesProfiles(drv driver.Driver) bool {
+	_, ok := drv.(sandboxBuilder)
 	return ok
 }
 
@@ -614,11 +706,11 @@ func (e *Engine) Profiles() []ProfileInfo {
 }
 
 // profileRootFS resolves the profile of a box: rootfs and fingerprint under gVisor, otherwise empty.
-func (e *Engine) profileRootFS(name string) (string, string, error) {
+func (e *Engine) profileRootFS(drv driver.Driver, name string) (string, string, error) {
 	if err := profile.ValidName(name); err != nil {
 		return "", "", err
 	}
-	if !e.usesProfiles() {
+	if !usesProfiles(drv) {
 		return "", "", nil
 	}
 	dir, err := e.profiles().Resolve(name)
@@ -630,11 +722,11 @@ func (e *Engine) profileRootFS(name string) (string, string, error) {
 }
 
 // checkProfile checks the profile before the build (without fingerprint).
-func (e *Engine) checkProfile(name string) error {
+func (e *Engine) checkProfile(drv driver.Driver, name string) error {
 	if err := profile.ValidName(name); err != nil {
 		return err
 	}
-	if !e.usesProfiles() {
+	if !usesProfiles(drv) {
 		return nil
 	}
 	_, err := e.profiles().Resolve(name)

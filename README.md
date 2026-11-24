@@ -38,10 +38,13 @@ CGO_ENABLED=0 go install github.com/rif223/tsbox/cmd/tsbox@latest
 **Then:**
 
 ```bash
-sudo tsbox setup                       # Linux: rootfs, group tsbox, systemd unit (optional)
+sudo tsbox setup                       # Linux: rootfs, group tsbox, systemd unit (system daemon)
 sudo tsbox setup --firecracker         # Linux with KVM: additionally Firecracker, jailer, guest kernel
+tsbox setup                            # Windows, macOS: tsboxd starts at logon and keeps running
 tsbox doctor                           # what is available, which driver isolates
 ```
+
+Like Docker's engine, tsboxd then runs permanently. `tsbox setup --remove` undoes that (boxes stay).
 
 **Windows:** started from a terminal inside a packaged (MSIX) app, tsbox's state in `%LOCALAPPDATA%\tsbox` is
 redirected into the app's package folder: builds get slower, and tsbox outside the app sees a different state.
@@ -61,8 +64,8 @@ go build -o tsbox ./cmd/tsbox          # on Linux for gVisor/Firecracker: CGO_EN
   at `/var/lib/tsbox/profiles/<name>` (`TSBOX_PROFILES`; build with `PROFILE=<name> scripts/build-rootfs.sh`),
   selected with `run --profile <name>` or `"profile"` in `tsbox.json`; `tsbox doctor` lists them with their
   fingerprint.
-- **Linux with KVM, opt-in:** driver `firecracker` (`TSBOX_DRIVER=firecracker` or `tsbox daemon --driver
-  firecracker`): every box runs in its own microVM. Needs root, `/dev/kvm`, the `firecracker` binary, a guest
+- **Linux with KVM, opt-in:** driver `firecracker` (per box with `run --driver firecracker` or `"driver"` in
+  `tsbox.json`, or as the daemon's default with `TSBOX_DRIVER=firecracker`): every box runs in its own microVM. Needs root, `/dev/kvm`, the `firecracker` binary, a guest
   kernel (`TSBOX_FC_KERNEL`, default `/var/lib/tsbox/firecracker/vmlinux`), `e2fsprogs` and the same rootfs as
   gVisor. `sudo tsbox setup --firecracker` installs binary, jailer and kernel. With `TSBOX_FC_JAILER=1` every
   VMM additionally runs under Firecracker's jailer (chroot, own UID per VM). `auto` never chooses it.
@@ -71,9 +74,13 @@ go build -o tsbox ./cmd/tsbox          # on Linux for gVisor/Firecracker: CGO_EN
 
 ## Managing boxes (tsboxd)
 
-All box commands talk to the daemon `tsboxd`. If none is running, the CLI starts it itself; it exits after 5 min
-of idle time (`TSBOX_NO_AUTOSTART=1` turns this off). On Linux, `sudo tsbox setup` sets up the rootfs, the group
-`tsbox` and a systemd unit (system daemon, access like the `docker` group).
+All box commands talk to the daemon `tsboxd`, which `tsbox setup` sets up to run permanently: on Linux a systemd
+unit (system daemon, access via the group `tsbox` like the `docker` group), on Windows an entry that starts it at
+logon (no admin rights; it runs as you, since Windows has only the dev driver), on macOS a LaunchAgent. If it is
+set up but not running, commands on Linux and macOS say how to start it instead of starting a second daemon; on
+Windows they start it the way the logon entry does. Without `tsbox setup`
+the CLI starts tsboxd itself on demand and it exits after 5 min of idle time (`TSBOX_NO_AUTOSTART=1` turns this
+off).
 
 ```bash
 tsbox run -d --name bot --restart always bot.ts      # in the background
@@ -85,8 +92,14 @@ tsbox inspect bot                                    # JSON without secret value
 tsbox events --since 1h
 tsbox up -d · tsbox down                             # project from tsbox.json (several boxes)
 tsbox doctor                                         # runsc, cgroup v2, rootfs, Deno, daemon, isolation?
-tsbox daemon stop                                    # end the autostarted daemon (e.g. to switch TSBOX_DRIVER)
+tsbox daemon start · tsbox daemon stop               # start tsboxd in the background / end it
 ```
+
+One daemon runs boxes with every driver that is usable on the machine. Each box picks its driver (`run --driver`,
+`"driver"` in `tsbox.json`); boxes without one get the daemon's default (`TSBOX_DRIVER`, `tsbox daemon --driver`,
+`auto`). A box keeps the driver it was created with. `tsbox doctor` shows which drivers the daemon can use and
+why one is missing (no root, no KVM, WSL2 on Windows on ARM, unsupported CPU architecture). gVisor counts as
+usable only after a test sandbox started; it switches to its kvm platform by itself where systrap does not work.
 
 `tsbox.json` describes boxes with scripts, SDKs, grants and limits (format:
 [ARCHITECTURE.md §3](docs/ARCHITECTURE.md#3-cli)).

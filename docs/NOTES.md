@@ -68,6 +68,19 @@ Interpretation:
 - Installed SDKs live in the daemon's state; for the system daemon `sdk add` runs as root. `sdk add`/`sdk rm`
   first ask every reachable tsboxd to end the SDK's provider processes and refuse while a running box uses it;
   installing and removing are atomic (copy next to the target, rename; `lock.json` changes last).
+- **tsboxd as a service** (like Docker's engine): `tsbox setup` on every system. Windows uses a logon entry in
+  `HKCU\...\Run`, not a Windows service: the only driver there is dev (no isolation), and a service would run
+  scripts as SYSTEM. The entry runs `tsbox daemon start`, which starts tsboxd without a window and exits, so
+  the console Windows opens for it closes at once. Autostart on demand stays as the fallback when nothing is
+  set up; with a service set up but stopped the CLI refuses to start a second daemon on Linux and macOS (it would
+  hold boxes nobody looks for, e.g. a user daemon next to a stopped system daemon); on Windows it starts the
+  same permanent daemon the logon entry would.
+- **Driver per box** (like Docker's runtimes): one daemon runs boxes with every usable driver, the daemon's
+  driver is only the default. Separate daemons per driver were a workaround with no gain in isolation: the
+  system daemon runs as root anyway. Drivers load on first use; a failed load is retried after 30 s, so a
+  driver set up later works without a restart. Creating a box stores its driver, so it keeps it when the
+  default changes. Isolating and other builds have separate slot limits, so a dev build never waits for a
+  sandbox build. gVisor and Firecracker share the artifact cache (both build with the rootfs's Deno).
 
 **Build**
 - Removing a box deletes its directory first and forgets the box afterwards: if the directory cannot be
@@ -208,6 +221,15 @@ bash scripts/fuzz.sh                                # all fuzz targets
 - **macOS: `/var` is a symlink** to `/private/var`; path checks compare resolved paths on both sides (found in
   `fcproto.AddTree`).
 - **dev driver on macOS** measures no RAM, RSS or threads; those limits do not apply there (tests skip them).
+- **gVisor systrap on WSL kernel 6.6:** `runsc` fails with "starting sandbox: creating process: out of memory"
+  on the AMD PC's WSL2 kernel 6.6.87 (31 GiB free); `--platform=kvm` works there. The ARM64 laptop's WSL2
+  kernel 6.18 runs systrap fine. Since then the gVisor driver starts a test sandbox (`runsc do /bin/true`, once
+  per runsc binary and platform) before it counts as usable; without an explicit platform it falls back to kvm
+  when only kvm works, and `doctor` and `/v1/info` say why. `TSBOX_GVISOR_PROBE=0` skips the test.
+- **Driver detection:** gVisor and Firecracker exist for amd64 and arm64 only; other architectures get a clear
+  error. Without `/dev/kvm` the message says how to get it: WSL2 needs `nestedVirtualization=true` in
+  `.wslconfig`; WSL2 on Windows on ARM (e.g. Snapdragon X) has no nested virtualization at all, so Firecracker
+  and gVisor's kvm platform are not possible there (gVisor with systrap is).
 - **Firecracker build context:** the build VM gets the script's whole directory as files in a tmpfs (gVisor mounts
   it instead). A script next to large data (found: a state directory of 364 MiB) broke the transfer with
   "broken pipe"; the host now refuses contexts above 192 MiB with a clear message.

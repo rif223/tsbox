@@ -86,6 +86,7 @@ func TestParseErrors(t *testing.T) {
 		`{"boxes":{"x":{"limits":{"memory":"lots"},"scripts":{"m":{"entry":"a.ts"}}}}}`:     "size",
 		`{"boxes":{"x":{"labels":{"tsbox.project":"y"},"scripts":{"m":{"entry":"a.ts"}}}}}`: "reserved",
 		`{"boxes":{"x":{"scripts":{"m":{"entry":"a.ts","limits":{"timeout":"soon"}}}}}}`:    "duration",
+		`{"boxes":{"x":{"driver":"docker","scripts":{"m":{"entry":"a.ts"}}}}}`:              "driver",
 	}
 	for in, want := range cases {
 		_, err := Parse([]byte(in), dir)
@@ -142,5 +143,21 @@ func TestLoadBOM(t *testing.T) {
 	os.WriteFile(p, []byte(`{"name":"`+"\xfc"+`","boxes":{}}`), 0o644)
 	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "not UTF-8") {
 		t.Errorf("ANSI: %v", err)
+	}
+}
+
+func TestParseDriver(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "a.ts", "")
+	in := `{"boxes":{"x":{"scripts":{"m":{"entry":"a.ts"}}},"y":{"driver":"dev","scripts":{"m":{"entry":"a.ts"}}}}}`
+	p, err := Parse([]byte(in), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Boxes[0].Spec.Driver != "" || p.Boxes[1].Spec.Driver != "dev" {
+		t.Fatalf("%+v %+v", p.Boxes[0].Spec, p.Boxes[1].Spec)
+	}
+	if p.Boxes[0].Hash == p.Boxes[1].Hash {
+		t.Fatal("hash does not depend on the driver")
 	}
 }

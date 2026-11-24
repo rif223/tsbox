@@ -25,12 +25,15 @@ type Info struct {
 	Mode        string `json:"mode"` // "user" or "system"
 	Autostarted bool   `json:"autostarted"`
 	Idle        string `json:"idle,omitempty"` // idle time until the daemon ends ("" = never)
-	Driver      string `json:"driver"`
-	Isolated    bool   `json:"isolated"`
-	StateDir    string `json:"stateDir"`
-	Socket      string `json:"socket"`
-	Running     int    `json:"running"` // boxes that have not ended
-	Boxes       int    `json:"boxes"`
+	Driver      string `json:"driver"`         // default driver for boxes without their own
+	Isolated    bool   `json:"isolated"`       // of the default driver
+	// Drivers lists all drivers of this platform and whether boxes can use them (empty: older daemon with
+	// only Driver).
+	Drivers  []tsbox.DriverInfo `json:"drivers,omitempty"`
+	StateDir string             `json:"stateDir"`
+	Socket   string             `json:"socket"`
+	Running  int                `json:"running"` // boxes that have not ended
+	Boxes    int                `json:"boxes"`
 }
 
 // CreateRequest creates a box (POST /v1/boxes).

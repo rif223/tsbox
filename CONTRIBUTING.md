@@ -13,7 +13,8 @@ please read [SECURITY.md](SECURITY.md) first and report them privately.
 go build -o tsbox ./cmd/tsbox                    # CGO_ENABLED=0 on Linux for gVisor/Firecracker
 go test ./...                                    # unit + E2E with the dev driver (all systems)
 sudo bash scripts/wsl-test.sh                    # Linux/WSL as root: E2E with dev and gVisor
-sudo TSBOX_DRIVERS=firecracker bash scripts/wsl-test.sh   # E2E with Firecracker (needs KVM)
+sudo TSBOX_DRIVERS=firecracker bash scripts/wsl-test.sh   # E2E with Firecracker (needs KVM; with runsc
+                                                          # installed also gVisor and Firecracker side by side)
 bash scripts/fuzz.sh                             # all fuzz targets
 ```
 

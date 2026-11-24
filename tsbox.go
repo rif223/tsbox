@@ -110,6 +110,9 @@ type BoxSpec struct {
 	// Profile selects the box's rootfs under gVisor: "" or "default", or a named profile
 	// (<profiles dir>/<name>). The dev driver uses the host's Deno and ignores it.
 	Profile string `json:"profile,omitempty"`
+	// Driver runs the box: "gvisor", "firecracker" or "dev". "" or "auto" is the engine's default driver.
+	// Creating a box writes the driver it got into its specification.
+	Driver string `json:"driver,omitempty"`
 }
 
 // ExitReason explains why a script ended.
