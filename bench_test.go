@@ -28,7 +28,7 @@ func BenchmarkBox(b *testing.B) {
 func benchBox(b *testing.B, n int) {
 	e, _ := newEngine(b)
 	ctx := context.Background()
-	spec := BoxSpec{Name: boxFor(b)}
+	spec := BoxSpec{Name: boxFor(b), Driver: driverName()}
 	if v, err := strconv.ParseFloat(os.Getenv("TSBOX_BENCH_CPU"), 64); err == nil {
 		spec.Limits.CPU = v // default 0.5
 	}
@@ -124,7 +124,7 @@ func BenchmarkBuild(b *testing.B) {
 	}{{"cold", []Option{WithoutBuildCache()}}, {"cached", nil}} {
 		b.Run(c.name, func(b *testing.B) {
 			e, _ := newEngine(b, c.opts...)
-			spec := BoxSpec{Name: boxFor(b), SDKs: []SDKUse{{Name: "kv"}},
+			spec := BoxSpec{Name: boxFor(b), Driver: driverName(), SDKs: []SDKUse{{Name: "kv"}},
 				Scripts: []ScriptSpec{{Name: "main", Entry: "testdata/sdk/kv.ts"}}}
 			if _, err := e.Check(context.Background(), spec); err != nil { // fills the cache
 				b.Fatal(err)

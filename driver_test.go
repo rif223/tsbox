@@ -11,24 +11,21 @@ import (
 	"github.com/rif223/tsbox/internal/driver"
 )
 
-// A box without a driver gets the default one and keeps it in its specification; "auto" means the same.
-func TestDriverPerBoxDefault(t *testing.T) {
+// A box without a driver is refused: there is no default driver; "auto" is unknown.
+func TestDriverRequired(t *testing.T) {
 	e, _ := newEngine(t)
-	def := e.DriverName()
-	ctx := context.Background()
-	for _, d := range []string{"", "auto"} {
-		b, err := e.Create(ctx, one(t, "../examples/hello.ts", func(s *BoxSpec) { s.Driver = d }))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if b.Spec().Driver != def || b.Status().Driver != def {
-			t.Errorf("driver %q: spec %q, status %q, want %q", d, b.Spec().Driver, b.Status().Driver, def)
-		}
+	if _, err := e.Create(context.Background(), one(t, "../examples/hello.ts", func(s *BoxSpec) { s.Driver = "" })); !errors.Is(err, ErrNoDriver) {
+		t.Fatalf("no driver: %v", err)
+	}
+	if _, err := e.Create(context.Background(), one(t, "../examples/hello.ts", func(s *BoxSpec) { s.Driver = "auto" })); err == nil || !strings.Contains(err.Error(), "unknown driver") {
+		t.Fatalf("auto: %v", err)
+	}
+	if err := (BoxSpec{Name: "x", Scripts: []ScriptSpec{{Name: "main", Entry: "a.ts"}}}).Validate(); !errors.Is(err, ErrNoDriver) {
+		t.Fatalf("validate: %v", err)
 	}
 }
 
-// A box can choose the dev driver next to any default driver (with an isolating default: mixed drivers in
-// one engine).
+// A dev box next to a box of the tested driver (with an isolating one: mixed drivers in one engine).
 func TestDriverPerBoxDev(t *testing.T) {
 	e, _ := newEngine(t)
 	st := runToEnd(t, e, one(t, "../examples/hello.ts", func(s *BoxSpec) { s.Driver = "dev" }), time.Minute)
@@ -41,7 +38,7 @@ func TestDriverPerBoxDev(t *testing.T) {
 	if isolatedDriver() {
 		st := runToEnd(t, e, one(t, "../examples/hello.ts", nil), time.Minute)
 		if st.Driver != driverName() || !st.Isolated || lastExit(t, st).Code != 0 {
-			t.Fatalf("default box next to a dev box: %+v", st)
+			t.Fatalf("%s box next to a dev box: %+v", driverName(), st)
 		}
 	}
 }
@@ -90,12 +87,12 @@ func TestDriverUnavailable(t *testing.T) {
 		t.Fatalf("gvisor box: %v", err)
 	}
 	if st := runToEnd(t, e, one(t, "../examples/hello.ts", nil), time.Minute); lastExit(t, st).Code != 0 {
-		t.Fatalf("default box after the failed one: %+v", st)
+		t.Fatalf("box after the failed one: %+v", st)
 	}
 	var found bool
 	for _, d := range e.Drivers() {
-		if d.Name == e.DriverName() {
-			found = d.Available && d.Default
+		if d.Name == driverName() {
+			found = d.Available
 		}
 	}
 	if !found {
@@ -120,10 +117,13 @@ func (fakeDriver) Start(context.Context, driver.Spec) (driver.Box, error) {
 
 // With required isolation, a box cannot ask for the dev driver; the failure is remembered for a while.
 func TestDriverRequireIsolation(t *testing.T) {
-	e := &Engine{cfg: config{requireIsolation: true}, defDriver: fakeDriver{},
+	e := &Engine{cfg: config{requireIsolation: true},
 		drivers: map[string]driver.Driver{"fake": fakeDriver{}}, drvErr: map[string]driverErr{}}
-	if d, err := e.driverFor(""); err != nil || d.Name() != "fake" {
-		t.Fatalf("default: %v %v", d, err)
+	if d, err := e.driverFor("fake"); err != nil || d.Name() != "fake" {
+		t.Fatalf("fake: %v %v", d, err)
+	}
+	if _, err := e.driverFor(""); !errors.Is(err, ErrNoDriver) {
+		t.Fatalf("no driver: %v", err)
 	}
 	if _, err := e.driverFor("dev"); !errors.Is(err, ErrNotIsolated) {
 		t.Fatalf("dev: %v", err)

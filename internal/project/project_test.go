@@ -24,7 +24,7 @@ const sample = `{
   "boxes": {
     "bot": {
       "limits": { "memory": "256Mi", "cpu": 0.5, "startCpu": 2, "pids": 64 },
-      "restart": "on-failure:5", "profile": "deno-next",
+      "restart": "on-failure:5", "profile": "deno-next", "driver": "gvisor",
       "labels": { "team": "a" },
       "sdks": {
         "kv": {},
@@ -35,7 +35,7 @@ const sample = `{
         "cron": { "entry": "src/cron.ts", "restart": "always" }
       }
     },
-    "web": { "scripts": { "main": { "entry": "src/bot.ts" } } }
+    "web": { "driver": "dev", "scripts": { "main": { "entry": "src/bot.ts" } } }
   }
 }`
 
@@ -51,7 +51,7 @@ func TestParse(t *testing.T) {
 		t.Fatalf("%+v", p)
 	}
 	s := p.Boxes[0].Spec
-	if s.Name != "demo-bot" || s.Profile != "deno-next" || s.Limits.StartCPU != 2 || s.Limits.Memory != 256<<20 || s.Restart.Mode != tsbox.RestartOnFailure || s.Restart.MaxFailures != 5 {
+	if s.Name != "demo-bot" || s.Profile != "deno-next" || s.Driver != "gvisor" || s.Limits.StartCPU != 2 || s.Limits.Memory != 256<<20 || s.Restart.Mode != tsbox.RestartOnFailure || s.Restart.MaxFailures != 5 {
 		t.Fatalf("Box: %+v", s)
 	}
 	if len(s.Scripts) != 2 || s.Scripts[0].Name != "cron" || s.Scripts[0].Restart.Mode != tsbox.RestartAlways {
@@ -77,16 +77,18 @@ func TestParseErrors(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "a.ts", "")
 	cases := map[string]string{
-		`{"boxes":{"x":{"scripts":{"m":{"entry":"a.ts"}}}},"extra":1}`: "unknown field",
+		`{"boxes":{"x":{"driver":"dev","scripts":{"m":{"entry":"a.ts"}}}},"extra":1}`: "unknown field",
 		`{"boxes":{}}`: "no boxes",
-		`{"boxes":{"X":{"scripts":{"m":{"entry":"a.ts"}}}}}`:                                "allowed",
-		`{"boxes":{"x":{"scripts":{}}}}`:                                                    "no scripts",
-		`{"boxes":{"x":{"scripts":{"m":{"entry":"missing.ts"}}}}}`:                          "missing.ts",
-		`{"boxes":{"x":{"restart":"soon","scripts":{"m":{"entry":"a.ts"}}}}}`:               "unknown",
-		`{"boxes":{"x":{"limits":{"memory":"lots"},"scripts":{"m":{"entry":"a.ts"}}}}}`:     "size",
-		`{"boxes":{"x":{"labels":{"tsbox.project":"y"},"scripts":{"m":{"entry":"a.ts"}}}}}`: "reserved",
-		`{"boxes":{"x":{"scripts":{"m":{"entry":"a.ts","limits":{"timeout":"soon"}}}}}}`:    "duration",
-		`{"boxes":{"x":{"driver":"docker","scripts":{"m":{"entry":"a.ts"}}}}}`:              "driver",
+		`{"boxes":{"X":{"driver":"dev","scripts":{"m":{"entry":"a.ts"}}}}}`:                                "allowed",
+		`{"boxes":{"x":{"driver":"dev","scripts":{}}}}`:                                                    "no scripts",
+		`{"boxes":{"x":{"driver":"dev","scripts":{"m":{"entry":"missing.ts"}}}}}`:                          "missing.ts",
+		`{"boxes":{"x":{"driver":"dev","restart":"soon","scripts":{"m":{"entry":"a.ts"}}}}}`:               "unknown",
+		`{"boxes":{"x":{"driver":"dev","limits":{"memory":"lots"},"scripts":{"m":{"entry":"a.ts"}}}}}`:     "size",
+		`{"boxes":{"x":{"driver":"dev","labels":{"tsbox.project":"y"},"scripts":{"m":{"entry":"a.ts"}}}}}`: "reserved",
+		`{"boxes":{"x":{"driver":"dev","scripts":{"m":{"entry":"a.ts","limits":{"timeout":"soon"}}}}}}`:    "duration",
+		`{"boxes":{"x":{"driver":"docker","scripts":{"m":{"entry":"a.ts"}}}}}`:                             "driver",
+		`{"boxes":{"x":{"scripts":{"m":{"entry":"a.ts"}}}}}`:                                               `"driver" is missing`,
+		`{"boxes":{"x":{"driver":"auto","scripts":{"m":{"entry":"a.ts"}}}}}`:                               "allowed are gvisor",
 	}
 	for in, want := range cases {
 		_, err := Parse([]byte(in), dir)
@@ -125,7 +127,7 @@ func FuzzScalars(f *testing.F) {
 func TestLoadBOM(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "a.ts", "console.log(1)")
-	const doc = `{"boxes":{"a":{"scripts":{"m":{"entry":"a.ts"}}}}}`
+	const doc = `{"boxes":{"a":{"driver":"dev","scripts":{"m":{"entry":"a.ts"}}}}}`
 	utf16 := []byte{0xFF, 0xFE}
 	for _, r := range doc {
 		utf16 = append(utf16, byte(r), 0)
@@ -149,12 +151,12 @@ func TestLoadBOM(t *testing.T) {
 func TestParseDriver(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "a.ts", "")
-	in := `{"boxes":{"x":{"scripts":{"m":{"entry":"a.ts"}}},"y":{"driver":"dev","scripts":{"m":{"entry":"a.ts"}}}}}`
+	in := `{"boxes":{"x":{"driver":"firecracker","scripts":{"m":{"entry":"a.ts"}}},"y":{"driver":"dev","scripts":{"m":{"entry":"a.ts"}}}}}`
 	p, err := Parse([]byte(in), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Boxes[0].Spec.Driver != "" || p.Boxes[1].Spec.Driver != "dev" {
+	if p.Boxes[0].Spec.Driver != "firecracker" || p.Boxes[1].Spec.Driver != "dev" {
 		t.Fatalf("%+v %+v", p.Boxes[0].Spec, p.Boxes[1].Spec)
 	}
 	if p.Boxes[0].Hash == p.Boxes[1].Hash {

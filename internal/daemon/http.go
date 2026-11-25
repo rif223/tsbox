@@ -133,7 +133,7 @@ func (d *Daemon) hInfo(w http.ResponseWriter, _ *http.Request) {
 		idle = d.cfg.Idle.String()
 	}
 	writeJSON(w, 200, client.Info{Version: tsbox.Version, API: client.APIVersion, Build: d.build, PID: os.Getpid(),
-		Mode: mode, Autostarted: d.cfg.Autostarted, Idle: idle, Driver: d.e.DriverName(), Isolated: d.e.Isolated(),
+		Mode: mode, Autostarted: d.cfg.Autostarted, Idle: idle,
 		Drivers: d.e.Drivers(), StateDir: d.cfg.StateDir, Socket: d.cfg.Socket, Running: d.running(), Boxes: len(d.records())})
 }
 

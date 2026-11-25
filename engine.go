@@ -32,8 +32,11 @@ import (
 	"github.com/rif223/tsbox/sdk"
 )
 
-// ErrNotIsolated: isolation required, but only the dev driver is available.
+// ErrNotIsolated: isolation required, but a box asks for the dev driver.
 var ErrNotIsolated = errors.New("no isolation available: the dev driver does not isolate (TSBOX_REQUIRE_ISOLATION is set)")
+
+// ErrNoDriver: a box names no driver. Every box chooses its own; there is no default.
+var ErrNoDriver = errors.New("no driver: every box needs one (gvisor, firecracker, dev)")
 
 // Option configures an engine.
 type Option func(*config)
@@ -71,10 +74,6 @@ func WithLogFileSize(n int64) Option { return func(c *config) { c.logMax = n } }
 
 // WithStateDir sets the state directory (artifacts, boxes, runsc state).
 func WithStateDir(dir string) Option { return func(c *config) { c.stateDir = dir } }
-
-// WithDriver selects the default driver for boxes without BoxSpec.Driver: "auto" (default), "gvisor",
-// "firecracker" or "dev". "auto" never chooses firecracker. Other drivers are loaded when a box needs them.
-func WithDriver(name string) Option { return func(c *config) { c.driver = name } }
 
 // WithRequireIsolation forbids the dev driver (also via TSBOX_REQUIRE_ISOLATION=1).
 func WithRequireIsolation() Option { return func(c *config) { c.requireIsolation = true } }
@@ -144,10 +143,9 @@ func WithProvider(name string, p sdk.Provider) Option {
 // the SDKs of an embedding application.
 func WithSDKDir(dir string) Option { return func(c *config) { c.sdkDirs = append(c.sdkDirs, dir) } }
 
-// Engine manages boxes via drivers: the default driver and, loaded on first use, those boxes ask for.
+// Engine manages boxes via drivers, each loaded when the first box asks for it.
 type Engine struct {
-	cfg       config
-	defDriver driver.Driver
+	cfg config
 
 	drvMu   sync.Mutex
 	drivers map[string]driver.Driver
@@ -180,10 +178,9 @@ type Engine struct {
 	pruned     atomic.Int64           // UnixNano of the last cleanup of the artifact store
 }
 
-// New creates an engine. Without WithDriver it chooses gvisor if it is usable (Linux, root, runsc,
-// rootfs), otherwise dev – then Driver().Isolated() reports false.
+// New creates an engine. It loads no driver yet: every box names its own (BoxSpec.Driver).
 func New(ctx context.Context, opts ...Option) (*Engine, error) {
-	cfg := config{driver: "auto"}
+	cfg := config{}
 	for _, o := range opts {
 		o(&cfg)
 	}
@@ -249,14 +246,7 @@ func New(ctx context.Context, opts ...Option) (*Engine, error) {
 	if cfg.oomAdj < -1000 || cfg.oomAdj > 1000 {
 		return nil, fmt.Errorf("oom_score_adj %d outside [-1000, 1000]", cfg.oomAdj)
 	}
-	drv, err := selectDriver(cfg)
-	if err != nil {
-		return nil, err
-	}
-	if cfg.requireIsolation && !drv.Isolated() {
-		return nil, ErrNotIsolated
-	}
-	e := &Engine{cfg: cfg, defDriver: drv, drivers: map[string]driver.Driver{drv.Name(): drv}, drvErr: map[string]driverErr{}, boxes: map[string]*Box{}, reg: sdkreg.New(cfg.stateDir, cfg.sdkDirs...),
+	e := &Engine{cfg: cfg, drivers: map[string]driver.Driver{}, drvErr: map[string]driverErr{}, boxes: map[string]*Box{}, reg: sdkreg.New(cfg.stateDir, cfg.sdkDirs...),
 		ext: map[string]*extproc.Provider{}, providers: map[string]sdk.Provider{
 			"log":  logprov.Provider{},
 			"kv":   kvprov.New(filepath.Join(cfg.stateDir, "kv")),
@@ -313,21 +303,10 @@ func selectDriver(cfg config) (driver.Driver, error) {
 		return d, nil
 	case "dev":
 		return dev.New(), nil
-	case "auto", "":
-		if runtime.GOOS == "linux" && os.Geteuid() == 0 {
-			if _, err := exec.LookPath("runsc"); err == nil {
-				if d, err := gv(); err == nil {
-					return d, nil
-				} else if cfg.platform != "" {
-					return nil, err // explicitly chosen platform: no silent switch to dev
-				} else {
-					cfg.logger.Warn("gVisor not usable, using dev", "reason", err)
-				}
-			}
-		}
-		return dev.New(), nil
+	case "":
+		return nil, ErrNoDriver
 	}
-	return nil, fmt.Errorf("unknown driver %q (auto, gvisor, firecracker, dev)", cfg.driver)
+	return nil, fmt.Errorf("unknown driver %q (gvisor, firecracker, dev)", cfg.driver)
 }
 
 // DefaultStateDir is the state directory without WithStateDir (TSBOX_STATE, otherwise system-dependent).
@@ -357,10 +336,6 @@ func defaultStateDir() string {
 	return filepath.Join(home, ".local", "state", "tsbox")
 }
 
-// DriverName and Isolated describe the default driver (boxes without BoxSpec.Driver).
-func (e *Engine) DriverName() string { return e.defDriver.Name() }
-func (e *Engine) Isolated() bool     { return e.defDriver.Isolated() }
-
 // DriverNames are the drivers tsbox knows on this platform.
 func DriverNames() []string {
 	if runtime.GOOS == "linux" {
@@ -373,7 +348,6 @@ func DriverNames() []string {
 type DriverInfo struct {
 	Name      string `json:"name"`
 	Isolated  bool   `json:"isolated"`
-	Default   bool   `json:"default,omitempty"`
 	Available bool   `json:"available"`
 	Error     string `json:"error,omitempty"` // why it is not available
 	Note      string `json:"note,omitempty"`  // e.g. why gVisor uses the kvm platform
@@ -383,7 +357,7 @@ type DriverInfo struct {
 func (e *Engine) Drivers() []DriverInfo {
 	var out []DriverInfo
 	for _, name := range DriverNames() {
-		di := DriverInfo{Name: name, Isolated: name != "dev", Default: name == e.defDriver.Name()}
+		di := DriverInfo{Name: name, Isolated: name != "dev"}
 		d, err := e.driverFor(name)
 		if err != nil {
 			di.Error = err.Error()
@@ -407,10 +381,10 @@ type driverErr struct {
 // in the meantime).
 const driverRetry = 30 * time.Second
 
-// driverFor returns a driver by name ("" and "auto": the default driver), loading it on first use.
+// driverFor returns a driver by name, loading it on first use.
 func (e *Engine) driverFor(name string) (driver.Driver, error) {
-	if name == "" || name == "auto" {
-		return e.defDriver, nil
+	if name == "" {
+		return nil, ErrNoDriver
 	}
 	e.drvMu.Lock()
 	defer e.drvMu.Unlock()
@@ -479,8 +453,7 @@ func (e *Engine) Create(ctx context.Context, spec BoxSpec) (*Box, error) {
 	return b, nil
 }
 
-// prepareSpec validates a specification and resolves its driver, profile and SDKs. The driver is written
-// into the specification, so a stored box keeps it even if the default changes.
+// prepareSpec validates a specification and resolves its driver, profile and SDKs.
 func (e *Engine) prepareSpec(spec BoxSpec) (BoxSpec, driver.Driver, map[string]*activeSDK, map[string]string, error) {
 	spec, err := normalize(spec)
 	if err != nil {
@@ -490,7 +463,6 @@ func (e *Engine) prepareSpec(spec BoxSpec) (BoxSpec, driver.Driver, map[string]*
 	if err != nil {
 		return spec, nil, nil, nil, err
 	}
-	spec.Driver = drv.Name()
 	if err := e.checkProfile(drv, spec.Profile); err != nil {
 		return spec, nil, nil, nil, err
 	}

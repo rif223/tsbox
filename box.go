@@ -138,11 +138,11 @@ func normalize(s BoxSpec) (BoxSpec, error) {
 		return s, err
 	}
 	switch s.Driver {
-	case "", "gvisor", "firecracker", "dev":
-	case "auto":
-		s.Driver = ""
+	case "gvisor", "firecracker", "dev":
+	case "":
+		return s, ErrNoDriver
 	default:
-		return s, fmt.Errorf("unknown driver %q (auto, gvisor, firecracker, dev)", s.Driver)
+		return s, fmt.Errorf("unknown driver %q (gvisor, firecracker, dev)", s.Driver)
 	}
 	seen := map[string]bool{}
 	for i := range s.Scripts {

@@ -43,7 +43,7 @@ func TestLoadManyBoxes(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
 	for i := range n {
-		spec := BoxSpec{Name: boxFor(t), Storage: fmt.Sprintf("load-%d-%d-%d", os.Getpid(), time.Now().UnixNano()%1e6, i),
+		spec := BoxSpec{Name: boxFor(t), Driver: driverName(), Storage: fmt.Sprintf("load-%d-%d-%d", os.Getpid(), time.Now().UnixNano()%1e6, i),
 			SDKs: []SDKUse{{Name: "kv"}}, Scripts: []ScriptSpec{
 				{Name: "a", Entry: "testdata/scripts/load.ts", Params: params},
 				{Name: "b", Entry: "testdata/scripts/load.ts", Params: params},

@@ -68,6 +68,12 @@ func (d *Daemon) load() []*record {
 			continue
 		}
 		r := &record{name: p.Spec.Name, spec: p.Spec, created: p.Created, desired: p.Desired, autoRemove: p.AutoRemove, last: p.Last}
+		// Boxes stored by tsbox 0.2 may lack the driver in their specification (it was the daemon's default);
+		// the driver of their last run is the one they had.
+		if r.spec.Driver == "" && r.last != nil && r.last.Driver != "" {
+			r.spec.Driver = r.last.Driver
+			d.log.Info("driver of the last run taken over", "box", r.name, "driver", r.spec.Driver)
+		}
 		if r.last != nil {
 			switch r.last.State {
 			case tsbox.BoxExited, tsbox.BoxFailed, tsbox.BoxQuarantined, tsbox.BoxCreated:

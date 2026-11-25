@@ -55,8 +55,8 @@ redirected into the app's package folder: builds get slower, and tsbox outside t
 ```bash
 git clone https://github.com/rif223/tsbox && cd tsbox
 go build -o tsbox ./cmd/tsbox          # on Linux for gVisor/Firecracker: CGO_ENABLED=0
-./tsbox run examples/hello.ts
-./tsbox run examples/fetch.ts --sdk http --grant http:host=api.github.com
+./tsbox run examples/hello.ts --driver dev        # Linux: --driver gvisor (tsbox doctor lists the usable ones)
+./tsbox run examples/fetch.ts --driver dev --sdk http --grant http:host=api.github.com
 ```
 
 - **Linux with gVisor** (root, `runsc` in PATH, rootfs with `/usr/local/bin/deno` at `TSBOX_ROOTFS` or
@@ -65,7 +65,7 @@ go build -o tsbox ./cmd/tsbox          # on Linux for gVisor/Firecracker: CGO_EN
   selected with `run --profile <name>` or `"profile"` in `tsbox.json`; `tsbox doctor` lists them with their
   fingerprint.
 - **Linux with KVM, opt-in:** driver `firecracker` (per box with `run --driver firecracker` or `"driver"` in
-  `tsbox.json`, or as the daemon's default with `TSBOX_DRIVER=firecracker`): every box runs in its own microVM. Needs root, `/dev/kvm`, the `firecracker` binary, a guest
+  `tsbox.json`): every box runs in its own microVM. Needs root, `/dev/kvm`, the `firecracker` binary, a guest
   kernel (`TSBOX_FC_KERNEL`, default `/var/lib/tsbox/firecracker/vmlinux`), `e2fsprogs` and the same rootfs as
   gVisor. `sudo tsbox setup --firecracker` installs binary, jailer and kernel. With `TSBOX_FC_JAILER=1` every
   VMM additionally runs under Firecracker's jailer (chroot, own UID per VM). `auto` never chooses it.
@@ -83,7 +83,7 @@ the CLI starts tsboxd itself on demand and it exits after 5 min of idle time (`T
 off).
 
 ```bash
-tsbox run -d --name bot --restart always bot.ts      # in the background
+tsbox run -d --name bot --restart always --driver gvisor bot.ts   # in the background
 tsbox ps -a                                          # boxes
 tsbox logs -f --since 10m bot                        # log files per script (2 × 10 MiB)
 tsbox stats                                          # live table: RAM/LIMIT, CPU, PIDS, RESTARTS, UPTIME
@@ -95,9 +95,9 @@ tsbox doctor                                         # runsc, cgroup v2, rootfs,
 tsbox daemon start · tsbox daemon stop               # start tsboxd in the background / end it
 ```
 
-One daemon runs boxes with every driver that is usable on the machine. Each box picks its driver (`run --driver`,
-`"driver"` in `tsbox.json`); boxes without one get the daemon's default (`TSBOX_DRIVER`, `tsbox daemon --driver`,
-`auto`). A box keeps the driver it was created with. `tsbox doctor` shows which drivers the daemon can use and
+One daemon runs boxes with every driver that is usable on the machine. Each box names its driver (`run --driver`,
+`"driver"` in `tsbox.json`); there is no default driver, so a box without one is refused. A box keeps the driver
+it was created with; a box stored by tsbox 0.1 without a driver does not start until it is created again. `tsbox doctor` shows which drivers the daemon can use and
 why one is missing (no root, no KVM, WSL2 on Windows on ARM, unsupported CPU architecture). gVisor counts as
 usable only after a test sandbox started; it switches to its kvm platform by itself where systrap does not work.
 
@@ -110,7 +110,7 @@ usable only after a test sandbox started; it switches to its kvm platform by its
 tsbox run <script.ts> [--mem 128Mi] [--cpu 0.5] [--pids 64] [--start-cpu 0] box
                       [--heap 64Mi] [--rss 0] [--threads 32]              script
                       [--timeout 0] [--watchdog 10s] [--restart no|on-failure[:n]|always]
-                      [--driver auto|gvisor|firecracker|dev] [--profile default] [--params '{"k":1}' | --params-file p.json] [-q] [-d [--rm]] [--name box]
+                      --driver gvisor|firecracker|dev [--profile default] [--params '{"k":1}' | --params-file p.json] [-q] [-d [--rm]] [--name box]
 ```
 
 | Exit code | Meaning |

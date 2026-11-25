@@ -228,7 +228,7 @@ func TestCanaryInBoxMemory(t *testing.T) {
 	e, rec := newEngine(t)
 	secret := fmt.Sprintf("tsbox-canary-secret-%d-9f3a71c2", time.Now().UnixNano())
 	marker := fmt.Sprintf("tsbox-canary-marker-%d-4be80d17", time.Now().UnixNano())
-	spec := BoxSpec{Name: boxFor(t),
+	spec := BoxSpec{Name: boxFor(t), Driver: driverName(),
 		SDKs: []SDKUse{{Name: "./testdata/sdk-secret", Config: map[string]string{"token": "env:TSBOX_CANARY"},
 			Env: map[string]string{"TSBOX_CANARY": secret}}},
 		Scripts: []ScriptSpec{{Name: "main", Entry: "testdata/scripts/canary.ts",

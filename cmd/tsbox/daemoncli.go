@@ -38,7 +38,6 @@ func daemonCmd(args []string) int {
 	group := fs.String("group", "tsbox", "group with access to the system socket (corresponds to the docker group)")
 	idle := fs.Duration("idle", 0, "exit after this much idle time (0 = never)")
 	auto := fs.Bool("autostarted", false, "started by the CLI (internal)")
-	drv := fs.String("driver", envOr("TSBOX_DRIVER", "auto"), "default driver for boxes without their own: auto | gvisor | firecracker | dev (default: TSBOX_DRIVER)")
 	fcJailer := fs.String("fc-jailer", "", "firecracker: run every VMM under the jailer (path, or 1 = jailer from PATH; default: TSBOX_FC_JAILER)")
 	fcKernel := fs.String("fc-kernel", "", "guest kernel of the firecracker driver (default: TSBOX_FC_KERNEL or "+tsbox.DefaultFirecrackerKernel+")")
 	rootfs := fs.String("rootfs", "", "rootfs for gVisor (profile default; default: TSBOX_ROOTFS)")
@@ -47,12 +46,6 @@ func daemonCmd(args []string) int {
 	oomAdj := fs.Int("oom-score-adj", tsbox.DefaultOOMScoreAdj, "oom_score_adj of the box processes (Linux; 0 = unchanged)")
 	usageFor(fs, "daemon [flags] | daemon stop [-f]   (tsboxd: local API for ps, logs, stats, ...)")
 	if _, ok := parsePos(fs, args, 0, 0); !ok {
-		return 2
-	}
-	switch *drv {
-	case "auto", "gvisor", "firecracker", "dev":
-	default:
-		fmt.Fprintf(os.Stderr, "tsbox daemon: --driver %q: allowed are auto, gvisor, firecracker and dev\n", *drv)
 		return 2
 	}
 	if runtime.GOOS == "windows" && *socket != "" && !strings.HasPrefix(*socket, `\\.\pipe\`) {
@@ -83,7 +76,9 @@ func daemonCmd(args []string) int {
 			cfg.Socket = client.UserSocket(cfg.StateDir)
 		}
 	}
-	cfg.Engine = append(cfg.Engine, tsbox.WithDriver(*drv))
+	if v := os.Getenv("TSBOX_DRIVER"); v != "" {
+		cfg.Logger.Warn("TSBOX_DRIVER is ignored: there is no default driver, every box names its own", "value", v)
+	}
 	if *rootfs != "" {
 		cfg.Engine = append(cfg.Engine, tsbox.WithRootFS(*rootfs))
 	}

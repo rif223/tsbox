@@ -16,7 +16,7 @@ import (
 )
 
 func sdkBox(t *testing.T, entry string, sdks ...SDKUse) BoxSpec {
-	return BoxSpec{Name: boxFor(t), Storage: "e2e-" + strings.ReplaceAll(strings.ToLower(t.Name()), "/", "-"),
+	return BoxSpec{Name: boxFor(t), Driver: driverName(), Storage: "e2e-" + strings.ReplaceAll(strings.ToLower(t.Name()), "/", "-"),
 		SDKs: sdks, Scripts: []ScriptSpec{{Name: "main", Entry: "testdata/" + entry}}}
 }
 

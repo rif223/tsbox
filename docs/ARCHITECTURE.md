@@ -70,7 +70,7 @@ TB   build sandbox (gVisor, no network, UID 65534, sources ro, output via stdout
 ```bash
 tsbox run <script.ts> [--mem 128Mi --cpu 0.5 --pids 64 --start-cpu 0]    # box
                       [--heap 64Mi --rss 0 --threads 32 --timeout 0 --watchdog 10s]  # script
-                      [--restart no|on-failure[:n]|always] [--driver auto|gvisor|firecracker|dev]
+                      [--restart no|on-failure[:n]|always] --driver gvisor|firecracker|dev
                       [--profile <name>]
                       [--sdk <name|path> …] [--grant <sdk>:<right>=<value> …]
                       [--sdk-config <sdk>:<name>=<value> …] [--storage <name>] [--params '<json>' | --params-file <file>] [-q]
@@ -82,7 +82,7 @@ tsbox stop [-t 5s] | start | restart [-t] | rm [-f] <box> …
 tsbox inspect <box> …                          # JSON without secret values
 tsbox events [--since] [--box] [--json]
 tsbox up [-d] [-f tsbox.json] | down [-f tsbox.json]
-tsbox daemon [--system] [--socket] [--idle 0] [--driver] [--rootfs] [--profiles] [--platform systrap|kvm] [--fc-kernel] [--fc-jailer] [--oom-score-adj 500] [--group tsbox]   # tsboxd
+tsbox daemon [--system] [--socket] [--idle 0] [--rootfs] [--profiles] [--platform systrap|kvm] [--fc-kernel] [--fc-jailer] [--oom-score-adj 500] [--group tsbox]   # tsboxd
 tsbox daemon start                       # user daemon in the background without idle exit
 tsbox daemon stop [-f]                   # end the user daemon (-f: also with running boxes)
 tsbox doctor | setup [--dry-run] [--no-rootfs] [--no-systemd] [--firecracker] [--force] | setup --remove
@@ -103,12 +103,11 @@ set up and none answers, it starts `tsbox daemon --autostarted --idle 5m` detach
 `<state>/tsboxd.log`); it exits after 5 min without a running box and without a connection (`TSBOX_IDLE`).
 `TSBOX_NO_AUTOSTART=1` turns this off. An autostarted daemon of a different build is replaced as long as no box
 is running. Each box has its own driver (`BoxSpec.Driver`, `run --driver`, `"driver"` in `tsbox.json`); the engine loads a
-driver when the first box needs it and retries a failed load after 30 s. Boxes without a driver get the daemon's
-default (`TSBOX_DRIVER`); creating a box writes the driver into its stored specification, so it keeps it if the
-default changes. A driver that cannot be loaded fails only the boxes that ask for it. Builds run with the box's
+driver when the first box needs it and retries a failed load after 30 s. There is no default driver: a box
+without one is refused (`ErrNoDriver`), and the stored specification keeps the box's driver. A driver that cannot be loaded fails only the boxes that ask for it. Builds run with the box's
 driver (build sandbox for gvisor/firecracker); isolating and other builds have separate slot limits. The rootfs is
-the daemon's (`TSBOX_ROOTFS`). `GET /v1/info` reports the default as `driver` and all drivers as `drivers`; a CLI
-talking to an older daemon without `drivers` still only checks that `--driver` matches. If an autostarted
+the daemon's (`TSBOX_ROOTFS`). `GET /v1/info` lists all drivers as `drivers`; the CLI refuses a daemon older than
+0.2 that has no such list. If an autostarted
 daemon ends right away (e.g. `runsc` missing), the CLI shows its error at once instead of waiting.
 
 | Address | Linux/macOS | Windows |
@@ -346,7 +345,7 @@ If the process dies, open calls fail with `unavailable`; the next open restarts 
 
 | | Linux + gVisor | Linux + Firecracker (opt-in) | Linux without gVisor | Windows | macOS |
 |---|---|---|---|---|---|
-| driver `auto` | gvisor | never chosen by `auto` | dev + warning | dev + warning | dev + warning |
+| usable drivers | gvisor, dev | firecracker, dev | dev + warning | dev + warning | dev + warning |
 | box RAM | cgroup | cgroup in the guest (VM RAM = limit + 64 MiB) | watchdog | job object + watchdog (private memory without the unused writable sections of init's image) | – |
 | box CPU / processes | cgroup | host cgroup of the VM / cgroup in the guest | – | job object | – |
 | script RSS / threads | `VmRSS−baseline` / RLIMIT_NPROC | RssAnon (exact) / RLIMIT_NPROC (real guest kernel) | RssAnon / measured | private memory / – | – |

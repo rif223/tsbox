@@ -132,7 +132,7 @@ func newEngine(t testing.TB, opts ...Option) (*Engine, *recorder) {
 		t.Skip("no Deno")
 	}
 	rec := &recorder{}
-	e, err := New(context.Background(), append([]Option{WithDriver(driverName()), WithDeno(testDeno), WithInit(testInit),
+	e, err := New(context.Background(), append([]Option{WithDeno(testDeno), WithInit(testInit),
 		WithStateDir(testState), WithLogs(rec.log), WithEvents(rec.ev)}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +154,7 @@ func boxFor(t testing.TB) string {
 }
 
 func one(t testing.TB, entry string, mod func(*BoxSpec)) BoxSpec {
-	s := BoxSpec{Name: boxFor(t), Scripts: []ScriptSpec{{Name: "main", Entry: filepath.Join("testdata", entry)}}}
+	s := BoxSpec{Name: boxFor(t), Driver: driverName(), Scripts: []ScriptSpec{{Name: "main", Entry: filepath.Join("testdata", entry)}}}
 	if mod != nil {
 		mod(&s)
 	}
@@ -376,7 +376,7 @@ func TestIntegrity(t *testing.T) {
 // TestIdentityAndStop: two scripts, logs belong to the right script; Stop ends both cleanly.
 func TestIdentityAndStop(t *testing.T) {
 	e, rec := newEngine(t)
-	spec := BoxSpec{Name: boxFor(t), Scripts: []ScriptSpec{
+	spec := BoxSpec{Name: boxFor(t), Driver: driverName(), Scripts: []ScriptSpec{
 		{Name: "alpha", Entry: "testdata/scripts/service.ts"},
 		{Name: "beta", Entry: "testdata/scripts/service.ts"},
 	}}
@@ -438,7 +438,7 @@ func TestIdentityAndStop(t *testing.T) {
 func TestSiblingsAndNetwork(t *testing.T) {
 	needIsolation(t)
 	e, rec := newEngine(t)
-	spec := BoxSpec{Name: boxFor(t), Scripts: []ScriptSpec{
+	spec := BoxSpec{Name: boxFor(t), Driver: driverName(), Scripts: []ScriptSpec{
 		{Name: "victim", Entry: "testdata/scripts/service.ts"},
 		{Name: "attacker", debugExec: []string{"/.tsbox/tsbox", "__probe"}},
 	}}

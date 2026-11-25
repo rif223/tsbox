@@ -260,7 +260,7 @@ func doctorDaemon(c *checker) {
 		if perr != nil {
 			perm = perr.Error()
 		}
-		c.ok("tsboxd", fmt.Sprintf("%s, PID %d, %s daemon, default driver %s, %d/%d boxes running", info.Version, info.PID, info.Mode, info.Driver, info.Running, info.Boxes))
+		c.ok("tsboxd", fmt.Sprintf("%s, PID %d, %s daemon, %d/%d boxes running", info.Version, info.PID, info.Mode, info.Running, info.Boxes))
 		for _, d := range info.Drivers {
 			if d.Available && d.Note != "" {
 				c.ok("driver "+d.Name, "usable by tsboxd ("+d.Note+")")

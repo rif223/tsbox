@@ -76,7 +76,7 @@ func upCmd(args []string) int {
 			}
 		}
 		for _, r := range p.Boxes {
-			if boxDriver(info, r.Spec.Driver) == "dev" {
+			if r.Spec.Driver == "dev" {
 				fmt.Fprintln(os.Stderr, "WARNING: driver \"dev\": NO isolation. Only for your own, trusted code.")
 				break
 			}
@@ -90,9 +90,6 @@ func upCmd(args []string) int {
 		want := map[string]bool{}
 		for _, r := range p.Boxes {
 			spec := r.Spec
-			if len(info.Drivers) == 0 {
-				spec.Driver = "" // older daemon (see run)
-			}
 			want[spec.Name] = true
 			spec.Labels[client.LabelProject] = p.Name
 			spec.Labels[client.LabelService] = r.Key

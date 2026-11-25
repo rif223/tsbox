@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -119,12 +120,12 @@ func newCLI(t *testing.T, extra ...string) *cli {
 	for _, kv := range os.Environ() {
 		k, _, _ := strings.Cut(kv, "=")
 		switch strings.ToUpper(k) {
-		case "TSBOX_STATE", "TSBOX_HOST", "TSBOX_NO_AUTOSTART", "TSBOX_IDLE", "TSBOX_DRIVER":
+		case "TSBOX_STATE", "TSBOX_HOST", "TSBOX_NO_AUTOSTART", "TSBOX_IDLE":
 			continue
 		}
 		env = append(env, kv)
 	}
-	env = append(env, "TSBOX_STATE="+state, "TSBOX_IDLE=2m", "TSBOX_DRIVER="+driverName(), "TSBOX_DENO="+testDeno)
+	env = append(env, "TSBOX_STATE="+state, "TSBOX_IDLE=2m", "TSBOX_DENO="+testDeno)
 	env = append(env, extra...)
 	c := &cli{t: t, state: state, env: env}
 	t.Cleanup(c.shutdown)
@@ -162,7 +163,13 @@ func (c *cli) shutdown() {
 	time.Sleep(500 * time.Millisecond) // release the lock and files (Windows)
 }
 
+// cmd builds a CLI call. "run" without --driver gets the tested driver (a box needs one; see TestRunDriver).
 func (c *cli) cmd(args ...string) *exec.Cmd {
+	if len(args) > 0 && args[0] == "run" && !slices.Contains(args, "--driver") && !slices.Contains(args, "--no-driver") {
+		args = append([]string{"run", "--driver", driverName()}, args[1:]...)
+	} else if len(args) > 0 && args[0] == "run" {
+		args = slices.DeleteFunc(slices.Clone(args), func(a string) bool { return a == "--no-driver" })
+	}
 	cmd := exec.Command(testBin, args...)
 	cmd.Dir = repo
 	cmd.Env = c.env
@@ -518,12 +525,13 @@ func TestUpDown(t *testing.T) {
   "name": "demo",
   "boxes": {
     "one": { "limits": { "memory": "256Mi" }, "restart": "on-failure:3",
+              "driver": "%[1]s",
               "scripts": { "a": { "entry": "src/a.ts" }, "b": { "entry": "src/b.ts", "limits": { "rss": "96Mi" } } } },
-    "two": { "sdks": { "kv": {} }, "scripts": { "main": { "entry": "other/a.ts" } } }
+    "two": { "driver": "%[1]s", "sdks": { "kv": {} }, "scripts": { "main": { "entry": "other/a.ts" } } }
   }
 }`
 	file := filepath.Join(dir, "tsbox.json")
-	os.WriteFile(file, []byte(proj), 0o644)
+	os.WriteFile(file, []byte(fmt.Sprintf(proj, driverName())), 0o644)
 	out := c.ok("up", "-d", "-f", file)
 	if strings.Count(out, "created and started") != 2 {
 		t.Fatalf("up: %s", out)
@@ -543,7 +551,7 @@ func TestUpDown(t *testing.T) {
 	c.waitState("demo-one", tsbox.BoxRunning)
 	// Another directory with the same project name must neither take over nor remove these boxes.
 	dir2 := t.TempDir()
-	os.WriteFile(filepath.Join(dir2, "tsbox.json"), []byte(`{"name":"demo","boxes":{"one":{"scripts":{"a":{"entry":"a.ts"}}}}}`), 0o644)
+	os.WriteFile(filepath.Join(dir2, "tsbox.json"), []byte(`{"name":"demo","boxes":{"one":{"driver":"dev","scripts":{"a":{"entry":"a.ts"}}}}}`), 0o644)
 	os.WriteFile(filepath.Join(dir2, "a.ts"), src, 0o644)
 	file2 := filepath.Join(dir2, "tsbox.json")
 	for _, args := range [][]string{{"up", "-d", "-f", file2}, {"down", "-f", file2}} {
@@ -621,8 +629,8 @@ func TestSDKLifecycle(t *testing.T) {
 	}
 }
 
-// TestRunDriver: --driver picks the box's driver, the daemon lists its drivers, and a stored box keeps its
-// driver over a daemon restart.
+// TestRunDriver: --driver picks the box's driver and is required, the daemon lists its drivers, and a stored
+// box keeps its driver over a daemon restart.
 func TestRunDriver(t *testing.T) {
 	c := newCLI(t)
 	c.ok("run", "-d", "--name", "pick", "--driver", "dev", "--restart", "always", "testdata/scripts/service.ts")
@@ -647,6 +655,25 @@ func TestRunDriver(t *testing.T) {
 	if b := c.waitState("pick", tsbox.BoxRunning); b.Driver != "dev" {
 		t.Fatalf("after restart: %+v", b)
 	}
+	// A box stored by tsbox 0.2 without the driver in its specification gets the driver of its last run.
+	c.shutdown()
+	stored := filepath.Join(c.state, "boxes", "pick", "tsboxd.json")
+	raw, err := os.ReadFile(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p map[string]any
+	if err := json.Unmarshal(raw, &p); err != nil {
+		t.Fatal(err)
+	}
+	delete(p["spec"].(map[string]any), "driver")
+	raw, _ = json.Marshal(p)
+	if err := os.WriteFile(stored, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b := c.waitState("pick", tsbox.BoxRunning); b.Driver != "dev" {
+		t.Fatalf("stored without driver: %+v", b)
+	}
 	if runtime.GOOS != "linux" {
 		_, stderr, code := c.run("run", "-d", "--name", "nope", "--driver", "gvisor", "testdata/scripts/service.ts")
 		if code == 0 || !strings.Contains(stderr, "gvisor") {
@@ -655,6 +682,20 @@ func TestRunDriver(t *testing.T) {
 	}
 	if _, stderr, code := c.run("run", "--driver", "docker", "testdata/scripts/service.ts"); code != 2 || !strings.Contains(stderr, "docker") {
 		t.Fatalf("unknown driver: %d %s", code, stderr)
+	}
+	// There is no default driver: without --driver (or with the old "auto") a box is refused.
+	if _, stderr, code := c.run("run", "--no-driver", "testdata/scripts/service.ts"); code != 2 || !strings.Contains(stderr, "--driver is required") {
+		t.Fatalf("without driver: %d %s", code, stderr)
+	}
+	if _, stderr, code := c.run("run", "--driver", "auto", "testdata/scripts/service.ts"); code != 2 || !strings.Contains(stderr, "auto") {
+		t.Fatalf("auto: %d %s", code, stderr)
+	}
+	// A project box without "driver" is refused before anything starts.
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "tsbox.json"), []byte(`{"name":"nodrv","boxes":{"one":{"scripts":{"a":{"entry":"a.ts"}}}}}`), 0o644)
+	os.WriteFile(filepath.Join(dir, "a.ts"), []byte("console.log(1)"), 0o644)
+	if _, stderr, code := c.run("up", "-d", "-f", filepath.Join(dir, "tsbox.json")); code == 0 || !strings.Contains(stderr, `"driver" is missing`) {
+		t.Fatalf("project without driver: %d %s", code, stderr)
 	}
 }
 

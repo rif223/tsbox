@@ -75,11 +75,11 @@ Interpretation:
   set up; with a service set up but stopped the CLI refuses to start a second daemon on Linux and macOS (it would
   hold boxes nobody looks for, e.g. a user daemon next to a stopped system daemon); on Windows it starts the
   same permanent daemon the logon entry would.
-- **Driver per box** (like Docker's runtimes): one daemon runs boxes with every usable driver, the daemon's
-  driver is only the default. Separate daemons per driver were a workaround with no gain in isolation: the
+- **Driver per box** (like Docker's runtimes): one daemon runs boxes with every usable driver, and every
+  box names its own: there is no default driver (a box without one is refused; `TSBOX_DRIVER` is ignored with a
+  warning in the daemon log). Separate daemons per driver were a workaround with no gain in isolation: the
   system daemon runs as root anyway. Drivers load on first use; a failed load is retried after 30 s, so a
-  driver set up later works without a restart. Creating a box stores its driver, so it keeps it when the
-  default changes. Isolating and other builds have separate slot limits, so a dev build never waits for a
+  driver set up later works without a restart. Creating a box stores its driver. Isolating and other builds have separate slot limits, so a dev build never waits for a
   sandbox build. gVisor and Firecracker share the artifact cache (both build with the rootfs's Deno).
 
 **Build**

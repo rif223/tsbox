@@ -221,7 +221,7 @@ func run(args []string) int {
 	timeout := fs.Duration("timeout", 0, "run time limit (e.g. 30s; 0 = unlimited)")
 	watchdog := fs.Duration("watchdog", 10*time.Second, "end a blocked event loop after (0 = off)")
 	restart := fs.String("restart", "no", "restart policy: no | on-failure[:max] | always")
-	drv := fs.String("driver", "auto", "driver of the box: auto (the daemon's default) | gvisor | firecracker | dev")
+	drv := fs.String("driver", "", "driver of the box (required): gvisor | firecracker | dev (tsbox doctor lists the usable ones)")
 	detach := fs.Bool("d", false, "start in the background (tsboxd), print the box name")
 	autoRm := fs.Bool("rm", false, "with -d: remove the box after it ends")
 	rootfs := fs.String("rootfs", "", "not supported: the rootfs is set for tsboxd (TSBOX_ROOTFS or tsbox daemon --rootfs)")
@@ -246,9 +246,11 @@ func run(args []string) int {
 		return 2
 	}
 	switch *drv {
-	case "auto", "gvisor", "firecracker", "dev":
+	case "gvisor", "firecracker", "dev":
+	case "":
+		return bad("--driver is required: gvisor, firecracker or dev (tsbox doctor lists the usable ones)")
 	default:
-		return bad("--driver %q: allowed are auto, gvisor, firecracker and dev", *drv)
+		return bad("--driver %q: allowed are gvisor, firecracker and dev", *drv)
 	}
 	if *timeout < 0 {
 		return bad("--timeout %s: must not be negative (0 = unlimited)", *timeout)
@@ -340,10 +342,7 @@ func run(args []string) int {
 	if err := checkDriver(info, *drv, *rootfs); err != nil {
 		return fail("%v", err)
 	}
-	if len(info.Drivers) == 0 {
-		spec.Driver = "" // older daemon: it rejects the field and has checked to be this driver anyway
-	}
-	if boxDriver(info, *drv) == "dev" {
+	if *drv == "dev" {
 		fmt.Fprintln(os.Stderr, "WARNING: driver \"dev\": NO isolation. Only for your own, trusted code.")
 		if *prof != "" && *prof != "default" && !*quiet {
 			fmt.Fprintf(os.Stderr, "tsbox: --profile %s has no effect with the driver dev (profiles are rootfs images for gVisor)\n", *prof)
@@ -425,36 +424,26 @@ func absRefs(uses []tsbox.SDKUse) {
 	}
 }
 
-// boxDriver is the driver a box gets: its own, or the daemon's default.
-func boxDriver(info client.Info, drv string) string {
-	if drv == "" || drv == "auto" {
-		return info.Driver
-	}
-	return drv
-}
-
-// checkDriver checks --driver/--rootfs against the daemon. A daemon that lists its drivers runs boxes with any
-// available one; an older daemon only with its single driver.
+// checkDriver checks the driver of a box and --rootfs against the daemon.
 func checkDriver(info client.Info, drv, rootfs string) error {
-	if drv != "" && drv != "auto" && len(info.Drivers) > 0 {
-		found := false
-		for _, d := range info.Drivers {
-			if d.Name != drv {
-				continue
-			}
-			found = true
-			if !d.Available {
-				return fmt.Errorf("driver %q is not usable: %s (tsbox doctor)", drv, d.Error)
-			}
+	if drv == "" {
+		return tsbox.ErrNoDriver
+	}
+	if len(info.Drivers) == 0 {
+		return fmt.Errorf("tsboxd %s does not know drivers per box: update it (tsbox setup)", info.Version)
+	}
+	found := false
+	for _, d := range info.Drivers {
+		if d.Name != drv {
+			continue
 		}
-		if !found {
-			return fmt.Errorf("driver %q does not exist on this platform", drv)
+		found = true
+		if !d.Available {
+			return fmt.Errorf("driver %q is not usable: %s (tsbox doctor)", drv, d.Error)
 		}
-	} else if drv != "" && drv != "auto" && drv != info.Driver {
-		if info.Mode == "system" {
-			return fmt.Errorf("tsboxd uses the driver %q, not %q (system daemon: change TSBOX_DRIVER in its systemd unit)", info.Driver, drv)
-		}
-		return fmt.Errorf("tsboxd uses the driver %q, not %q (\"tsbox daemon stop\", then run again with TSBOX_DRIVER=%s)", info.Driver, drv, drv)
+	}
+	if !found {
+		return fmt.Errorf("driver %q does not exist on this platform", drv)
 	}
 	if rootfs != "" {
 		return errors.New("--rootfs applies to tsboxd: set TSBOX_ROOTFS or use \"tsbox daemon --rootfs ...\"")

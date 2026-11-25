@@ -140,9 +140,9 @@ func Run(ctx context.Context, cfg Config) error {
 	d.restore(baseCtx)
 	srvErr := make(chan error, 1)
 	go func() { srvErr <- srv.Serve(ln) }()
-	d.log.Info("tsboxd ready", "socket", cfg.Socket, "state", cfg.StateDir, "driver", e.DriverName(), "idle", cfg.Idle)
+	d.log.Info("tsboxd ready", "socket", cfg.Socket, "state", cfg.StateDir, "idle", cfg.Idle)
 	for _, di := range e.Drivers() {
-		d.log.Info("driver", "name", di.Name, "default", di.Default, "available", di.Available, "reason", di.Error, "note", di.Note)
+		d.log.Info("driver", "name", di.Name, "available", di.Available, "reason", di.Error, "note", di.Note)
 	}
 
 	idle := time.NewTicker(time.Second)
@@ -250,12 +250,13 @@ func (d *Daemon) get(name string) (*record, error) {
 	return r, nil
 }
 
-// driverOf is the driver a box uses: its own, or the default for boxes stored before drivers per box.
+// driverOf is the driver a box uses ("" for boxes stored before drivers per box: they do not start until
+// created again with a driver).
 func (d *Daemon) driverOf(spec tsbox.BoxSpec) string {
-	if spec.Driver != "" && spec.Driver != "auto" {
-		return spec.Driver
+	if spec.Driver == "auto" {
+		return ""
 	}
-	return d.e.DriverName()
+	return spec.Driver
 }
 
 // view is the view for ps/inspect.
@@ -270,7 +271,7 @@ func (r *record) view(d *Daemon) client.Box {
 		st = *r.last
 	default:
 		drv := d.driverOf(r.spec)
-		st = tsbox.BoxStatus{Name: r.name, Driver: drv, Isolated: drv != "dev", State: tsbox.BoxCreated,
+		st = tsbox.BoxStatus{Name: r.name, Driver: drv, Isolated: drv != "" && drv != "dev", State: tsbox.BoxCreated,
 			Limits: r.spec.Limits, Labels: r.spec.Labels}
 		for _, s := range r.spec.Scripts {
 			st.Scripts = append(st.Scripts, tsbox.ScriptStatus{Name: s.Name, State: tsbox.ScriptPending})
@@ -409,7 +410,11 @@ func (d *Daemon) start(ctx context.Context, r *record, env map[string]string) er
 		nb, err := d.e.Create(ctx, withEnv(spec, envCopy))
 		if err != nil {
 			r.mu.Lock()
-			st := tsbox.BoxStatus{Name: r.name, Driver: d.driverOf(spec), State: tsbox.BoxFailed, Error: err.Error(), Limits: spec.Limits, Labels: spec.Labels}
+			drv := d.driverOf(spec)
+			if drv == "" && r.last != nil {
+				drv = r.last.Driver // keep what is known (see load)
+			}
+			st := tsbox.BoxStatus{Name: r.name, Driver: drv, State: tsbox.BoxFailed, Error: err.Error(), Limits: spec.Limits, Labels: spec.Labels}
 			r.last = &st
 			d.save(r)
 			r.mu.Unlock()

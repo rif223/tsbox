@@ -21,8 +21,8 @@ import (
 
 // Version of tsbox. Release builds set it from the tag:
 //
-//	go build -ldflags "-X github.com/rif223/tsbox.Version=0.1.0" ./cmd/tsbox
-var Version = "0.1.0-dev"
+//	go build -ldflags "-X github.com/rif223/tsbox.Version=0.3.0" ./cmd/tsbox
+var Version = "0.3.0-dev"
 
 // Init runs the internal roles of the binary (tsbox-init in the box, UID switch, test probe) and then
 // exits the process. Otherwise it returns immediately. Must be at the beginning of main.
@@ -110,8 +110,7 @@ type BoxSpec struct {
 	// Profile selects the box's rootfs under gVisor: "" or "default", or a named profile
 	// (<profiles dir>/<name>). The dev driver uses the host's Deno and ignores it.
 	Profile string `json:"profile,omitempty"`
-	// Driver runs the box: "gvisor", "firecracker" or "dev". "" or "auto" is the engine's default driver.
-	// Creating a box writes the driver it got into its specification.
+	// Driver runs the box: "gvisor", "firecracker" or "dev". Required: there is no default driver.
 	Driver string `json:"driver,omitempty"`
 }
 

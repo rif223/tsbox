@@ -50,12 +50,12 @@ func check(args []string) int {
 		return usagef("%s", notFound(entry))
 	}
 	ctx := context.Background()
-	e, err := tsbox.New(ctx, tsbox.WithDriver("dev"))
+	e, err := tsbox.New(ctx)
 	if err != nil {
 		return failf("%v", err)
 	}
 	defer e.Close(ctx)
-	hashes, err := e.Check(ctx, tsbox.BoxSpec{Name: "check", SDKs: uses,
+	hashes, err := e.Check(ctx, tsbox.BoxSpec{Name: "check", Driver: "dev", SDKs: uses,
 		Scripts: []tsbox.ScriptSpec{{Name: "main", Entry: entry}}})
 	if err != nil {
 		printBuildErr(err)
@@ -436,12 +436,12 @@ func sdkTest(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	e, err := tsbox.New(ctx, tsbox.WithDriver("dev"), tsbox.WithLogs(func(l tsbox.LogLine) { fmt.Println("        |", l.Msg) }))
+	e, err := tsbox.New(ctx, tsbox.WithLogs(func(l tsbox.LogLine) { fmt.Println("        |", l.Msg) }))
 	if !step("engine", err) {
 		return 1
 	}
 	defer e.Close(context.Background())
-	b, err := e.Run(ctx, tsbox.BoxSpec{Name: "sdk-test-" + m.Name, SDKs: uses, Storage: "sdk-test",
+	b, err := e.Run(ctx, tsbox.BoxSpec{Name: "sdk-test-" + m.Name, Driver: "dev", SDKs: uses, Storage: "sdk-test",
 		Scripts: []tsbox.ScriptSpec{{Name: "example", Entry: example, Limits: tsbox.ScriptLimits{Timeout: time.Minute}}}})
 	if err != nil {
 		printBuildErr(err)
