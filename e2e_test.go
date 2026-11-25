@@ -293,7 +293,8 @@ func TestThreads(t *testing.T) {
 	e, rec := newEngine(t)
 	spec := one(t, "attack/threads.ts", func(s *BoxSpec) {
 		s.Limits.Memory = 1 << 30
-		s.Scripts[0].Limits.Threads = 16
+		// Deno 2.9 needs more than 16 threads to start on a 4-core runner (crash before the test runs).
+		s.Scripts[0].Limits.Threads = 24
 	})
 	ex := lastExit(t, runToEnd(t, e, spec, 2*time.Minute))
 	logs := strings.Join(rec.messages("main"), "\n")
