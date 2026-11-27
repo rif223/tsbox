@@ -29,10 +29,14 @@ func (d *Daemon) routes() http.Handler {
 	m.HandleFunc("POST /v1/boxes/{name}/start", d.hStart)
 	m.HandleFunc("POST /v1/boxes/{name}/stop", d.hStop)
 	m.HandleFunc("POST /v1/boxes/{name}/restart", d.hRestart)
+	m.HandleFunc("PUT /v1/boxes/{name}", d.hUpdate)
+	m.HandleFunc("POST /v1/boxes/{name}/emit", d.quick(d.hEmit))
 	m.HandleFunc("DELETE /v1/boxes/{name}", d.hRemove)
 	m.HandleFunc("GET /v1/boxes/{name}/logs", d.hLogs)
 	m.HandleFunc("GET /v1/stats", d.hStats)
 	m.HandleFunc("GET /v1/events", d.hEvents)
+	m.HandleFunc("GET /v1/metrics", d.hMetrics)
+	m.HandleFunc("GET /v1/tenants", d.quick(d.hTenants))
 	m.HandleFunc("POST /v1/sdks/{name}/release", d.quick(d.hReleaseSDK))
 	m.HandleFunc("POST /v1/shutdown", d.quick(d.hShutdown))
 	return m
@@ -484,6 +488,15 @@ func (d *Daemon) hReleaseSDK(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// hTenants reports usage and quota per tenant (empty without --tenant-quota).
+func (d *Daemon) hTenants(w http.ResponseWriter, _ *http.Request) {
+	out := d.e.Tenants()
+	if out == nil {
+		out = []tsbox.TenantUsage{}
+	}
+	writeJSON(w, 200, out)
 }
 
 func (d *Daemon) hShutdown(w http.ResponseWriter, _ *http.Request) {

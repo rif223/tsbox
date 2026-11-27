@@ -187,3 +187,10 @@ func (r *Router) Close() error {
 type ProviderFunc func(ctx context.Context, s Session) (Handler, error)
 
 func (f ProviderFunc) Open(ctx context.Context, s Session) (Handler, error) { return f(ctx, s) }
+
+// GrantValidator is an optional interface of providers: the engine calls ValidateGrants when a box is
+// created or checked, so that a grant the provider cannot use (e.g. an invalid schedule) is refused at
+// once instead of at the first call.
+type GrantValidator interface {
+	ValidateGrants(g Grants, c Config) error
+}

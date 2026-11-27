@@ -4,10 +4,10 @@ package sdks
 
 import "embed"
 
-// FS contains log/, kv/, http/ and echo/.
+// FS contains log/, kv/, http/, echo/, inbox/ and cron/.
 //
-//go:embed log kv http echo
+//go:embed log kv http echo inbox cron
 var FS embed.FS
 
 // Names are the bundled SDKs.
-var Names = []string{"log", "kv", "http", "echo"}
+var Names = []string{"log", "kv", "http", "echo", "inbox", "cron"}

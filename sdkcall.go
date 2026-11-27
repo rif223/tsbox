@@ -33,6 +33,11 @@ type SDKUse struct {
 	Env map[string]string `json:"-"`
 }
 
+// knownCodes are the error codes counted by name in SDKCalls.
+var knownCodes = map[string]bool{sdk.InvalidArgument: true, sdk.PermissionDenied: true, sdk.NotFound: true,
+	sdk.RateLimited: true, sdk.TooLarge: true, sdk.Timeout: true, sdk.Unavailable: true, sdk.QuotaExceeded: true,
+	sdk.Internal: true}
+
 // maxInflightPerScript limits all SDK calls of a script together.
 const maxInflightPerScript = 16
 
@@ -78,6 +83,11 @@ func (e *Engine) resolveSDKs(spec BoxSpec) (map[string]*activeSDK, map[string]st
 		p, err := e.providerFor(s, cfg)
 		if err != nil {
 			return nil, nil, err
+		}
+		if v, ok := p.(sdk.GrantValidator); ok {
+			if err := v.ValidateGrants(sdk.Grants(use.Grants), sdk.Config(cfg)); err != nil {
+				return nil, nil, fmt.Errorf("SDK %q: %w", m.Name, err)
+			}
 		}
 		active[m.Name] = &activeSDK{reg: s, m: m, provider: p, grants: sdk.Grants(use.Grants), config: sdk.Config(cfg)}
 		imports[m.Import] = s.ModulePath()
@@ -270,13 +280,18 @@ func (s *script) sessionLocked(b *Box, a *activeSDK) *session {
 // callLocked checks an SDK call and runs it asynchronously. Unknown SDK and unknown method give the same
 // answer (no oracle about installed SDKs).
 func (b *Box) callLocked(s *script, f *proto.Frame) {
-	reply := func(code, msg string) {
-		b.sendLocked(&proto.Frame{T: proto.TRet, SID: s.spec.Name, ID: f.ID, Err: &proto.Error{Code: code, Msg: msg}})
-	}
 	a := b.sdks[f.SDK]
 	var m *manifest.Method
 	if a != nil {
 		m = a.m.Methods[f.M]
+	}
+	reply := func(code, msg string) {
+		sdkName, method := "_unknown", ""
+		if a != nil && m != nil {
+			sdkName, method = a.m.Name, f.M
+		}
+		b.e.calls.add(b.spec.Name, sdkName, method, code)
+		b.sendLocked(&proto.Frame{T: proto.TRet, SID: s.spec.Name, ID: f.ID, Err: &proto.Error{Code: code, Msg: msg}})
 	}
 	if a == nil || m == nil || s.run == nil {
 		reply(sdk.NotFound, fmt.Sprintf("%s.%s is not available (SDK not activated or method unknown)", trunc(f.SDK, 32), trunc(f.M, 32)))
@@ -345,6 +360,14 @@ func (b *Box) execCall(s *script, run *scriptRun, ss *session, m *manifest.Metho
 			payload, perr = nil, &proto.Error{Code: sdk.TooLarge, Msg: "result larger than " + manifest.FormatBytes(m.MaxResult)}
 		}
 	}()
+	code := "ok"
+	if perr != nil {
+		code = perr.Code
+		if !knownCodes[code] { // codes of external providers are not bounded
+			code = "other"
+		}
+	}
+	b.e.calls.add(b.spec.Name, ss.a.m.Name, method, code)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	run.inflight[key]--

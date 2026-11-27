@@ -1,83 +1,75 @@
-// Package kv is the built-in provider of @tsbox/kv: a key-value store per storage area (box) and script,
-// persisted as a JSON file (replaced atomically) with a byte quota.
+// Package kv is the built-in provider of @tsbox/kv: a key-value store per storage area (box) and script with
+// a byte quota, versions for compare-and-set, counters and TTLs. The data lives in a kvstore.Store
+// (default: kvstore.FileStore, one JSON file per namespace).
 package kv
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
-	"sort"
+	"strconv"
 	"strings"
-	"sync"
+	"time"
 	"unicode/utf8"
 
-	"github.com/rif223/tsbox/internal/fsutil"
+	"github.com/rif223/tsbox/kvstore"
 	"github.com/rif223/tsbox/sdk"
 )
 
 const (
-	maxKey  = 256
-	maxList = 1000
+	maxKey   = 256
+	maxList  = 1000
+	maxTTL   = 10 * 365 * 24 * time.Hour
+	maxSafe  = 1<<53 - 1 // largest integer JavaScript represents exactly
+	minTTLMs = 1
 )
 
 var safeName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$`)
 
-// Provider holds all namespaces under root.
+// Provider serves @tsbox/kv from a store.
 type Provider struct {
-	root string
-	mu   sync.Mutex
-	ns   map[string]*namespace
+	store kvstore.Store
+	now   func() time.Time
 }
 
-func New(root string) *Provider { return &Provider{root: root, ns: map[string]*namespace{}} }
+// New creates a provider with a FileStore below root.
+func New(root string) *Provider { return NewWithStore(kvstore.NewFileStore(root)) }
 
-type namespace struct {
-	path   string
-	mu     sync.Mutex
-	loaded bool
-	data   map[string]json.RawMessage
-	used   int64
-}
+// NewWithStore creates a provider on any store.
+func NewWithStore(s kvstore.Store) *Provider { return &Provider{store: s, now: time.Now} }
 
 func (p *Provider) Open(_ context.Context, s sdk.Session) (sdk.Handler, error) {
 	storage, script := s.Box().Storage, s.Script().Name
 	if !safeName.MatchString(storage) || !safeName.MatchString(script) || strings.Contains(storage+script, "..") {
 		return nil, fmt.Errorf("kv: invalid storage area %q/%q", storage, script)
 	}
-	path := filepath.Join(p.root, storage, script+".json")
-	p.mu.Lock()
-	ns, ok := p.ns[path]
-	if !ok {
-		ns = &namespace{path: path}
-		p.ns[path] = ns
-	}
-	p.mu.Unlock()
+	ns := kvstore.Namespace{Storage: storage, Script: script}
 	quota, maxValue := s.Config().Bytes("quota"), s.Config().Bytes("maxValue")
+	st := p.store
 
 	r := sdk.NewRouter(s)
-	sdk.Method(r, "get", func(_ context.Context, _ sdk.Session, q struct {
+	sdk.Method(r, "get", func(ctx context.Context, _ sdk.Session, q struct {
 		Key string `json:"key"`
 	}) (any, error) {
 		if err := checkKey(q.Key); err != nil {
 			return nil, err
 		}
-		ns.mu.Lock()
-		defer ns.mu.Unlock()
-		if err := ns.load(); err != nil {
+		e, ok, err := st.Get(ctx, ns, q.Key)
+		if err != nil {
 			return nil, err
 		}
-		v, ok := ns.data[q.Key]
 		if !ok {
 			return map[string]any{"found": false}, nil
 		}
-		return map[string]any{"found": true, "value": v}, nil
+		return entryResult(e), nil
 	})
-	sdk.Method(r, "set", func(_ context.Context, _ sdk.Session, q struct {
-		Key   string          `json:"key"`
-		Value json.RawMessage `json:"value"`
+	sdk.Method(r, "set", func(ctx context.Context, _ sdk.Session, q struct {
+		Key       string          `json:"key"`
+		Value     json.RawMessage `json:"value"`
+		TTL       *int64          `json:"ttl"`       // milliseconds
+		IfVersion *uint64         `json:"ifVersion"` // 0 = only if absent
 	}) (any, error) {
 		if err := checkKey(q.Key); err != nil {
 			return nil, err
@@ -88,73 +80,143 @@ func (p *Provider) Open(_ context.Context, s sdk.Session) (sdk.Handler, error) {
 		if int64(len(q.Value)) > maxValue {
 			return nil, sdk.Errorf(sdk.TooLarge, "value larger than %d bytes", maxValue)
 		}
-		ns.mu.Lock()
-		defer ns.mu.Unlock()
-		if err := ns.load(); err != nil {
+		exp, err := p.expiry(q.TTL)
+		if err != nil {
 			return nil, err
 		}
-		old, had := ns.data[q.Key]
-		used := ns.used + int64(len(q.Value))
-		if had {
-			used -= int64(len(old))
-		} else {
-			used += int64(len(q.Key))
-		}
-		if used > quota {
-			return nil, sdk.Errorf(sdk.QuotaExceeded, "quota of %d bytes exhausted", quota)
-		}
-		ns.data[q.Key] = append(json.RawMessage(nil), q.Value...)
-		ns.used = used
-		if err := ns.save(); err != nil {
-			if had {
-				ns.data[q.Key] = old
-			} else {
-				delete(ns.data, q.Key)
+		ok := true
+		e, err := st.Update(ctx, ns, q.Key, quota, func(cur *kvstore.Entry) (*kvstore.Entry, error) {
+			if !versionMatches(cur, q.IfVersion) {
+				ok = false
+				return cur, nil
 			}
-			return nil, err
+			return &kvstore.Entry{Value: q.Value, Expires: exp}, nil
+		})
+		if err != nil {
+			return nil, storeErr(err, quota)
 		}
-		return map[string]any{}, nil
+		if !ok {
+			return map[string]any{"ok": false}, nil
+		}
+		return map[string]any{"ok": true, "version": e.Version}, nil
 	})
-	sdk.Method(r, "delete", func(_ context.Context, _ sdk.Session, q struct {
+	sdk.Method(r, "incr", func(ctx context.Context, _ sdk.Session, q struct {
 		Key string `json:"key"`
+		By  *int64 `json:"by"`
+		TTL *int64 `json:"ttl"` // milliseconds, only when the key is created
 	}) (any, error) {
 		if err := checkKey(q.Key); err != nil {
 			return nil, err
 		}
-		ns.mu.Lock()
-		defer ns.mu.Unlock()
-		if err := ns.load(); err != nil {
+		by := int64(1)
+		if q.By != nil {
+			by = *q.By
+		}
+		if by > maxSafe || by < -maxSafe {
+			return nil, sdk.Errorf(sdk.InvalidArgument, "by outside ±2^53")
+		}
+		exp, err := p.expiry(q.TTL)
+		if err != nil {
 			return nil, err
 		}
-		old, had := ns.data[q.Key]
-		if !had {
-			return map[string]any{"deleted": false}, nil
-		}
-		delete(ns.data, q.Key)
-		ns.used -= int64(len(q.Key) + len(old))
-		return map[string]any{"deleted": true}, ns.save()
-	})
-	sdk.Method(r, "list", func(_ context.Context, _ sdk.Session, q struct {
-		Prefix string `json:"prefix"`
-	}) (any, error) {
-		ns.mu.Lock()
-		defer ns.mu.Unlock()
-		if err := ns.load(); err != nil {
-			return nil, err
-		}
-		keys := []string{}
-		for k := range ns.data {
-			if strings.HasPrefix(k, q.Prefix) {
-				keys = append(keys, k)
+		var n int64
+		e, err := st.Update(ctx, ns, q.Key, quota, func(cur *kvstore.Entry) (*kvstore.Entry, error) {
+			next := &kvstore.Entry{Expires: exp}
+			if cur != nil {
+				v, err := strconv.ParseInt(string(cur.Value), 10, 64)
+				if err != nil {
+					return nil, sdk.Errorf(sdk.InvalidArgument, "value of %q is not an integer", q.Key)
+				}
+				n, next.Expires = v, cur.Expires
 			}
+			if (by > 0 && n > maxSafe-by) || (by < 0 && n < -maxSafe-by) {
+				return nil, sdk.Errorf(sdk.InvalidArgument, "counter would leave ±2^53")
+			}
+			n += by
+			next.Value = json.RawMessage(strconv.FormatInt(n, 10))
+			return next, nil
+		})
+		if err != nil {
+			return nil, storeErr(err, quota)
 		}
-		sort.Strings(keys)
-		if len(keys) > maxList {
-			keys = keys[:maxList]
+		return map[string]any{"value": n, "version": e.Version}, nil
+	})
+	sdk.Method(r, "delete", func(ctx context.Context, _ sdk.Session, q struct {
+		Key       string  `json:"key"`
+		IfVersion *uint64 `json:"ifVersion"`
+	}) (any, error) {
+		if err := checkKey(q.Key); err != nil {
+			return nil, err
 		}
-		return map[string]any{"keys": keys}, nil
+		deleted := false
+		_, err := st.Update(ctx, ns, q.Key, quota, func(cur *kvstore.Entry) (*kvstore.Entry, error) {
+			if cur == nil || !versionMatches(cur, q.IfVersion) {
+				return cur, nil
+			}
+			deleted = true
+			return nil, nil
+		})
+		if err != nil {
+			return nil, storeErr(err, quota)
+		}
+		return map[string]any{"deleted": deleted}, nil
+	})
+	sdk.Method(r, "list", func(ctx context.Context, _ sdk.Session, q struct {
+		Prefix string `json:"prefix"`
+		After  string `json:"after"`
+		Limit  int    `json:"limit"`
+	}) (any, error) {
+		if len(q.Prefix) > maxKey || len(q.After) > maxKey {
+			return nil, sdk.Errorf(sdk.InvalidArgument, "prefix and after: at most %d bytes", maxKey)
+		}
+		limit := q.Limit
+		if limit <= 0 || limit > maxList {
+			limit = maxList
+		}
+		keys, more, err := st.List(ctx, ns, q.Prefix, q.After, limit)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"keys": keys, "more": more}, nil
 	})
 	return r, nil
+}
+
+func entryResult(e kvstore.Entry) map[string]any {
+	out := map[string]any{"found": true, "value": e.Value, "version": e.Version}
+	if !e.Expires.IsZero() {
+		out["expiresAt"] = e.Expires.UnixMilli()
+	}
+	return out
+}
+
+// versionMatches: nil = any; 0 = the key must be absent; otherwise the current version.
+func versionMatches(cur *kvstore.Entry, want *uint64) bool {
+	switch {
+	case want == nil:
+		return true
+	case *want == 0:
+		return cur == nil
+	default:
+		return cur != nil && cur.Version == *want
+	}
+}
+
+func (p *Provider) expiry(ttl *int64) (time.Time, error) {
+	if ttl == nil {
+		return time.Time{}, nil
+	}
+	if *ttl < minTTLMs || *ttl > maxTTL.Milliseconds() {
+		return time.Time{}, sdk.Errorf(sdk.InvalidArgument, "ttl: 1 ms to 10 years (milliseconds)")
+	}
+	return p.now().Add(time.Duration(*ttl) * time.Millisecond), nil
+}
+
+func storeErr(err error, quota int64) error {
+	if errors.Is(err, kvstore.ErrQuota) {
+		return sdk.Errorf(sdk.QuotaExceeded, "quota of %d bytes exhausted", quota)
+	}
+	return err
 }
 
 func checkKey(k string) error {
@@ -162,41 +224,4 @@ func checkKey(k string) error {
 		return sdk.Errorf(sdk.InvalidArgument, "key: 1-%d bytes of UTF-8", maxKey)
 	}
 	return nil
-}
-
-func (n *namespace) load() error {
-	if n.loaded {
-		return nil
-	}
-	n.data = map[string]json.RawMessage{}
-	b, err := os.ReadFile(n.path)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if len(b) > 0 {
-		if err := json.Unmarshal(b, &n.data); err != nil {
-			return fmt.Errorf("kv: %s damaged: %w", n.path, err)
-		}
-	}
-	n.used = 0
-	for k, v := range n.data {
-		n.used += int64(len(k) + len(v))
-	}
-	n.loaded = true
-	return nil
-}
-
-func (n *namespace) save() error {
-	if err := os.MkdirAll(filepath.Dir(n.path), 0o700); err != nil {
-		return err
-	}
-	b, err := json.Marshal(n.data)
-	if err != nil {
-		return err
-	}
-	tmp := n.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return fsutil.Rename(tmp, n.path)
 }

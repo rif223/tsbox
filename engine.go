@@ -24,11 +24,13 @@ import (
 	"github.com/rif223/tsbox/internal/driver/gvisor"
 	"github.com/rif223/tsbox/internal/logfile"
 	"github.com/rif223/tsbox/internal/profile"
+	cronprov "github.com/rif223/tsbox/internal/providers/cron"
 	"github.com/rif223/tsbox/internal/providers/extproc"
 	"github.com/rif223/tsbox/internal/providers/httpp"
 	kvprov "github.com/rif223/tsbox/internal/providers/kv"
 	logprov "github.com/rif223/tsbox/internal/providers/log"
 	"github.com/rif223/tsbox/internal/sdkreg"
+	"github.com/rif223/tsbox/kvstore"
 	"github.com/rif223/tsbox/sdk"
 )
 
@@ -64,6 +66,9 @@ type config struct {
 	sdkDirs          []string
 	noLogFiles       bool
 	logMax           int64
+	kvStore          kvstore.Store
+	quotaLabel       string
+	quotaFn          func(tenant string) Quota
 }
 
 // WithoutLogFiles turns off the per-script log files (Box.Logs then returns only new lines).
@@ -129,7 +134,7 @@ func WithLogs(fn func(LogLine)) Option { return func(c *config) { c.onLog = fn }
 func WithLogger(l *slog.Logger) Option { return func(c *config) { c.logger = l } }
 
 // WithProvider registers a built-in provider (Go) under the name manifests use in
-// "provider": {"builtin": name}. Bundled are log, kv and http.
+// "provider": {"builtin": name}. Bundled are log, kv, http, inbox and cron.
 func WithProvider(name string, p sdk.Provider) Option {
 	return func(c *config) {
 		if c.providers == nil {
@@ -138,6 +143,10 @@ func WithProvider(name string, p sdk.Provider) Option {
 		c.providers[name] = p
 	}
 }
+
+// WithKVStore replaces the storage of @tsbox/kv (default: kvstore.FileStore below <state>/kv), e.g. with
+// a store backed by PostgreSQL. Quotas, key and value limits stay those of the SDK's configuration.
+func WithKVStore(s kvstore.Store) Option { return func(c *config) { c.kvStore = s } }
 
 // WithSDKDir adds a directory in which SDKs (<dir>/<name>/tsbox-sdk.json each) are found by name, e.g.
 // the SDKs of an embedding application.
@@ -174,6 +183,8 @@ type Engine struct {
 	logwMu sync.Mutex
 	logw   map[string]*logfile.Writer
 
+	calls      callCounter            // finished SDK calls (SDKCalls)
+	quotaMu    sync.Mutex             // serializes quota check and start, so two starts cannot both fit
 	buildSlots map[bool]chan struct{} // real builds at the same time, per isolating (true) or not
 	pruned     atomic.Int64           // UnixNano of the last cleanup of the artifact store
 }
@@ -252,6 +263,8 @@ func New(ctx context.Context, opts ...Option) (*Engine, error) {
 			"kv":   kvprov.New(filepath.Join(cfg.stateDir, "kv")),
 			"http": httpp.Provider{},
 		}}
+	e.providers["inbox"] = inboxProvider{e}
+	e.providers["cron"] = cronprov.New()
 	for name, p := range cfg.providers {
 		e.providers[name] = p
 	}
@@ -283,6 +296,13 @@ func New(ctx context.Context, opts ...Option) (*Engine, error) {
 		}()
 	}
 	return e, nil
+}
+
+func kvProvider(cfg config) sdk.Provider {
+	if cfg.kvStore != nil {
+		return kvprov.NewWithStore(cfg.kvStore)
+	}
+	return kvprov.New(filepath.Join(cfg.stateDir, "kv"))
 }
 
 func selectDriver(cfg config) (driver.Driver, error) {
@@ -435,6 +455,9 @@ func (e *Engine) Run(ctx context.Context, spec BoxSpec) (*Box, error) {
 func (e *Engine) Create(ctx context.Context, spec BoxSpec) (*Box, error) {
 	spec, drv, active, imports, err := e.prepareSpec(spec)
 	if err != nil {
+		return nil, err
+	}
+	if err := e.checkQuota(spec, false); err != nil {
 		return nil, err
 	}
 	e.mu.Lock()

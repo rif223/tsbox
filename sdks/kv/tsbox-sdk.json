@@ -1,8 +1,8 @@
 {
   "name": "kv",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "tsbox": "^0.1",
-  "description": "Key-value store per script (persistent, with quota)",
+  "description": "Key-value store per script (persistent, with quota, versions, counters and TTL)",
   "provider": { "builtin": "kv" },
   "config": {
     "quota": { "type": "bytes", "default": "1Mi", "description": "keys + values per script" },
@@ -17,7 +17,22 @@
       "maxResult": "80Ki",
       "timeout": "5s"
     },
-    "set": { "rate": "100/s", "burst": 200, "concurrency": 8, "maxParams": "80Ki", "maxResult": "64", "timeout": "5s" },
+    "set": {
+      "rate": "100/s",
+      "burst": 200,
+      "concurrency": 8,
+      "maxParams": "80Ki",
+      "maxResult": "128",
+      "timeout": "5s"
+    },
+    "incr": {
+      "rate": "100/s",
+      "burst": 200,
+      "concurrency": 8,
+      "maxParams": "1Ki",
+      "maxResult": "128",
+      "timeout": "5s"
+    },
     "delete": {
       "rate": "100/s",
       "burst": 200,

@@ -244,3 +244,12 @@ bash scripts/fuzz.sh                                # all fuzz targets
 4. Scripts of one box are one trust domain (under gVisor they see each other's `cmdline` and `status`).
 5. Side channels between boxes on one host are not addressed; there is no independent audit yet
    ([SECURITY.md](../SECURITY.md)).
+6. `update` stops the old box before the new one starts (same name, storage and artifact directory): the
+   scripts are down for stop plus start (about 0.1–2 s, see §1), not for the build. A rolling update per script
+   inside a running box is not implemented.
+7. Tenant quotas sum the box limits, not the measured use; a box that is started while another start of the same
+   tenant runs waits for the quota check (`Engine.quotaMu`), so two starts cannot both fit.
+8. `cron` ticks come from the host's clock; runs missed while the host slept or the script was not running are
+   not repeated. `@every` counts from the session's open, not from the full minute.
+9. The E2E tests of inbox, cron, kv v2, update and quotas (`e2e_features_test.go`) need Deno; the daemon and CLI
+   paths of `update`, `emit` and `/v1/metrics` have no E2E test of their own yet.

@@ -298,7 +298,13 @@ func (b *Box) buildScript(ctx context.Context, s *script, adir string) error {
 
 // Start starts the box and all scripts. Returns as soon as init has reported in.
 func (b *Box) Start(ctx context.Context) error {
+	b.e.quotaMu.Lock()
+	if err := b.e.checkQuota(b.spec, true); err != nil {
+		b.e.quotaMu.Unlock()
+		return err
+	}
 	b.mu.Lock()
+	b.e.quotaMu.Unlock() // from here on the box counts as running (state starting)
 	if b.state == BoxStarting || b.state == BoxRunning || b.state == BoxStopping {
 		b.mu.Unlock()
 		return fmt.Errorf("box %q is already running", b.spec.Name)

@@ -211,7 +211,7 @@ func editDistance(a, b string) int {
 	return prev[len(b)]
 }
 
-var commands = []string{"run", "ps", "logs", "stats", "stop", "start", "restart", "rm", "inspect", "events",
+var commands = []string{"run", "ps", "logs", "stats", "stop", "start", "restart", "rm", "inspect", "update", "emit", "events",
 	"up", "down", "daemon", "doctor", "setup", "check", "types", "sdk", "version", "help"}
 
 // suggestCmd finds a command close to an unknown one (none for flags like "-x": they are no misspelled

@@ -263,6 +263,19 @@ func LookupEnv(spec tsbox.BoxSpec) map[string]string {
 	return out
 }
 
+// Update replaces the specification of a box (see UpdateRequest).
+func (c *Client) Update(ctx context.Context, name string, req UpdateRequest) (Box, error) {
+	var b Box
+	return b, c.call(ctx, http.MethodPut, "/boxes/"+url.PathEscape(name), req, &b)
+}
+
+// Emit sends an event to the scripts of a running box and returns to how many it was queued.
+func (c *Client) Emit(ctx context.Context, name string, req EmitRequest) (int, error) {
+	var r EmitResult
+	err := c.call(ctx, http.MethodPost, "/boxes/"+url.PathEscape(name)+"/emit", req, &r)
+	return r.Delivered, err
+}
+
 // Stop stops a box; grace is the deadline for the scripts (0 = default).
 func (c *Client) Stop(ctx context.Context, name string, grace time.Duration) (Box, error) {
 	var b Box

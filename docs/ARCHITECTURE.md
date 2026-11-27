@@ -29,7 +29,7 @@ on: [gvisor-spike.md](gvisor-spike.md); Firecracker compared with gVisor: [firec
 ```
 tsbox (CLI) ──HTTP/JSON over Unix socket or named pipe──▶ tsboxd ──▶ engine
  ├─ driver: gvisor | firecracker | dev
- ├─ SDK registry: log, kv, http, echo (bundled) + installed + local paths
+ ├─ SDK registry: log, kv, http, echo, inbox, cron (bundled) + installed + local paths
  └─ box "bot" ── cgroup limits, one trust domain, labels
      ├─ tsbox-init (PID 1 in the sandbox)
      ├─ script "main" ── Deno, UID 10001, heap/RSS/threads/run time/watchdog, restart policy
@@ -80,9 +80,12 @@ tsbox logs [-f] [--since 10m|<RFC3339>] [--script <name>] [-n <lines>] [-t] <box
 tsbox stats [--json] [--no-stream] [<box>]     # live table BOX SCRIPT STATE RAM/LIMIT CPU PIDS RESTARTS UPTIME
 tsbox stop [-t 5s] | start | restart [-t] | rm [-f] <box> …
 tsbox inspect <box> …                          # JSON without secret values
+tsbox update [--spec box.json | --mem --cpu --pids --entry --params --script] [-t 5s] <box>   # rebuild, then swap
+tsbox emit [--script <name>] <box> <topic> [<json>] | emit --event <sdk>:<event> <box> [<json>]
 tsbox events [--since] [--box] [--json]
 tsbox up [-d] [-f tsbox.json] | down [-f tsbox.json]
-tsbox daemon [--system] [--socket] [--idle 0] [--rootfs] [--profiles] [--platform systrap|kvm] [--fc-kernel] [--fc-jailer] [--oom-score-adj 500] [--group tsbox]   # tsboxd
+tsbox daemon [--system] [--socket] [--idle 0] [--rootfs] [--profiles] [--platform systrap|kvm] [--fc-kernel] [--fc-jailer] [--oom-score-adj 500] [--group tsbox]
+             [--tenant-label tenant --tenant-quota boxes=10,memory=2Gi,cpu=4,pids=1024] [--metrics-addr 127.0.0.1:9464]   # tsboxd
 tsbox daemon start                       # user daemon in the background without idle exit
 tsbox daemon stop [-f]                   # end the user daemon (-f: also with running boxes)
 tsbox doctor | setup [--dry-run] [--no-rootfs] [--no-systemd] [--firecracker] [--force] | setup --remove
@@ -119,7 +122,21 @@ daemon ends right away (e.g. `runsc` missing), the CLI shows its error at once i
 autoRemove, attach, env}` (with `attach` a stream of logs, events and the final status; if it breaks, the daemon
 stops the box) · `GET|DELETE boxes/{name}` · `POST boxes/{name}/start|stop|restart` ·
 `GET boxes/{name}/logs?follow&since&script&tail` · `GET stats?box&stream` · `GET events?since&box` ·
-`POST shutdown`. Errors: `{"error":{"code","message"}}` with `not_found`, `conflict`, `invalid`, `build`.
+`PUT boxes/{name}` `{spec, env, grace}` (update: build and check first while the old box runs, then stop it and
+start the new one if it was running; name, storage and logs stay) · `POST boxes/{name}/emit` `{sdk, event,
+script, payload}` (default `inbox`/`message`; answer `{delivered}`) · `GET metrics` (Prometheus text) ·
+`GET tenants` · `POST shutdown`. Errors: `{"error":{"code","message"}}` with `not_found`, `conflict`, `invalid`,
+`build`, `quota`, `not_running`.
+
+**Metrics:** `GET /v1/metrics` on the socket, and with `--metrics-addr` (`TSBOX_METRICS_ADDR`) `GET /metrics` on
+a TCP address that serves nothing else. It contains box and script names, states, limits, measurements, restarts,
+SDK calls by result (`tsbox_sdk_calls_total{box,sdk,method,code}`) and tenant sums, never specifications or
+secrets. Bind it to loopback or a monitoring network: box names may be sensitive.
+
+**Tenant quotas:** `--tenant-label` names a label (e.g. `tenant`), `--tenant-quota` the quota every tenant gets.
+`boxes` counts all boxes of the tenant (also stopped ones, also those the daemon has not loaded since its start);
+`memory`, `cpu` and `pids` add up the box limits of running boxes and are checked at every start and update.
+Boxes without the label have no quota. The error code is `quota` (HTTP 409).
 
 **State:** `<state>/boxes/<name>/tsboxd.json` (specification with absolute paths and references
 `file:`/`env:`, desired state, last status), `artifacts/`, `logs/<script>.log` + `.log.1` (JSON lines, rotation
@@ -222,10 +239,15 @@ boxes, _ := c.List(ctx, true)
 for m, err := range c.Attach(ctx, client.CreateRequest{Spec: spec}) { … } // like tsbox run
 ```
 
-- **Public packages:** `tsbox` (engine), `client` (API of tsboxd), `sdk` (provider API), `manifest` (manifest, grants). Everything else is `internal/`.
+- **Public packages:** `tsbox` (engine), `client` (API of tsboxd), `sdk` (provider API), `manifest` (manifest, grants), `kvstore` (storage interface of `@tsbox/kv`). Everything else is `internal/`.
+- **Update:** `Engine.Update(ctx, spec, grace)` builds and checks the new specification while the old box keeps running (a build error changes nothing), then stops the old box and starts the new one if the old one ran; if the new one does not start, it starts the old specification again. Storage and log files stay.
+- **Host → script:** `Box.Emit(sdk, event, payload, script)` delivers an event of an active SDK to the scripts that subscribed to it (never blocking, ≤ 256 KiB). The bundled SDK `inbox` is the generic channel; its method `send` becomes the engine event `script_message` (`Event.Detail` = topic, `Event.Payload` = data).
+- **Quotas and counters:** `WithTenantQuotas(label, fn)`, `Engine.Tenants()`, `ParseQuota`; `Engine.SDKCalls()` counts finished SDK calls per box, SDK, method and result (`ok` or the error code; unknown SDKs as `_unknown`, unknown codes of external providers as `other`).
+- **kv storage:** `WithKVStore(store)` replaces the default `kvstore.FileStore` (e.g. with PostgreSQL); a store provides atomic updates per key, versions, expiry and the quota.
 - **Logs:** per script `<state>/boxes/<box>/logs/<script>.log`, rotated at 10 MiB (`WithLogFileSize`), at most two files; can be turned off with `WithoutLogFiles()`. A separate goroutine writes them via a bounded queue (losses are counted). `LogLine.Seq` is strictly monotonic; `Box.Logs`/`Engine.Logs` return stored lines (`Since`, `Script`, `Tail`) and with `Follow` new ones until the box ends.
 - **Script states:** `pending` (not started yet) → `starting` (process started, @tsbox/core not up yet) → `running` (the first frame of the script arrived: its first heartbeat, a log line, an SDK call, …; independent of whether and how it logs) → `ready` (only after the script's own `ready()`, opt-in) → `exited`; also `backoff` and `broken`. `script_started` is emitted once per start, `script_ready` at `ready()`.
-- **Events** (asynchronous, never blocking, losses are counted): `box_started`, `box_exited`, `box_quarantined`, `script_started`, `script_ready`, `script_exited` (with reason), `restart_scheduled`, `circuit_open`, `integrity_failed`, `oom`, `violation`.
+- **Events** (asynchronous, never blocking, losses are counted): `box_started`, `box_exited`, `box_quarantined`, `script_started`, `script_ready`, `script_exited` (with reason), `restart_scheduled`, `circuit_open`, `integrity_failed`, `oom`, `violation`,
+`script_message` (@tsbox/inbox); tsboxd adds `box_created`, `box_removed`, `box_updated`.
 - **Exit reasons:** `exit`, `crash`, `heap`, `rss`, `threads`, `oom`, `watchdog`, `timeout`, `integrity`, `protocol`, `backpressure`, `spawn_failed`, `killed`, `stopped`, `box_hung`, `box_died`, `box_shutdown`.
 - **Restart policy:** `no` | `on-failure` | `always`, backoff 1 s · 2^(n−1) up to 60 s. Circuit breaker: n failures in 10 min ⇒ `broken`. `integrity` and `protocol` never restart; a hung or dead box is quarantined.
 - **Profiles and host OOM:** `BoxSpec.Profile` selects the rootfs (gVisor only; `WithRootFS` = `default`, `WithProfilesDir` for others, `Engine.Profiles()` lists them with their fingerprint). `WithOOMScoreAdj` (default 500) applies to the host processes of every box.
@@ -310,9 +332,11 @@ If the process dies, open calls fail with `unavailable`; the next open restarts 
 | SDK | Provider | Content |
 |---|---|---|
 | `log` | builtin | structured lines with fields |
-| `kv` | builtin | get/set/delete/list per storage and script, persistent (JSON file), quota 1 MiB, value ≤ 64 KiB |
+| `kv` | builtin | get/set/delete/list/incr per storage and script, versions for compare-and-set (`ifVersion`), TTL, paged lists (`after`, `limit`), quota 1 MiB, value ≤ 64 KiB; storage behind `kvstore.Store` (default JSON file `<state>/kv/<storage>/v2/<script>.json`; files of 0.3 are migrated) |
 | `http` | builtin | fetch: host allowlist, https only, IP check while connecting (against SSRF and DNS rebinding), redirects checked, no proxy, no cookies, size and time limit |
 | `echo` | external (Deno) | template for external providers with events |
+| `inbox` | builtin | messages host ⇄ script: event `message` from `Box.Emit`/`tsbox emit`, method `send` → engine event `script_message` |
+| `cron` | builtin | right `schedule` (`[name=]expression`: 5 fields, `@daily`, `@every 30s` …, at most 32), config `timezone`; event `tick`, method `next`; checked when the box is created (`sdk.GrantValidator`) |
 
 ## 7. Security model
 
@@ -371,10 +395,11 @@ internal/driver/{gvisor,firecracker,dev,cgroup}   drivers, build sandbox / build
 internal/fcguest  internal/fcproto     PID 1 in the Firecracker microVM, vsock protocol
 internal/build                         bundler, artifact store, build cache
 internal/sdkreg                        registry, lock.json
-internal/providers/{log,kv,httpp,extproc}
+internal/providers/{log,kv,httpp,cron,extproc}  (inbox: emit.go)
+kvstore/                               storage interface of @tsbox/kv, FileStore
 internal/denobin  internal/sdktest
 js/core/                               @tsbox/core
-sdks/{log,kv,http,echo}/               bundled SDKs (embedded)
+sdks/{log,kv,http,echo,inbox,cron}/   bundled SDKs (embedded)
 examples/  testdata/{scripts,attack,sdk,sdk-secret}/
 scripts/                               build-rootfs.sh (embedded for setup, PROFILE=), wsl-test.sh (also CI), fuzz.sh
 docs/

@@ -33,6 +33,9 @@ type Config struct {
 	Autostarted bool          // started by the CLI (may be replaced when the binary changes)
 	Engine      []tsbox.Option
 	Logger      *slog.Logger
+	// MetricsAddr additionally serves GET /metrics (Prometheus) on this TCP address ("" = only
+	// GET /v1/metrics on the socket).
+	MetricsAddr string
 }
 
 const (
@@ -78,6 +81,7 @@ type record struct {
 	box        *tsbox.Box
 	attached   bool
 	removed    bool
+	updating   bool // Update replaces the box; the watcher of the old one must not remove it
 }
 
 // Run starts the daemon and returns when ctx ends, /v1/shutdown is called or the idle time expires.
@@ -136,6 +140,15 @@ func Run(ctx context.Context, cfg Config) error {
 				d.active.Add(-1)
 			}
 		},
+	}
+	if cfg.MetricsAddr != "" {
+		stopMetrics, err := d.serveMetrics(baseCtx, cfg.MetricsAddr)
+		if err != nil {
+			_ = ln.Close()
+			_ = e.Close(context.Background())
+			return err
+		}
+		defer stopMetrics()
 	}
 	d.restore(baseCtx)
 	srvErr := make(chan error, 1)
@@ -353,6 +366,24 @@ func (d *Daemon) create(ctx context.Context, req client.CreateRequest, attached 
 		d.mu.Unlock()
 		return nil, &client.Error{Status: 409, Code: "conflict", Message: fmt.Sprintf("box %q already exists (tsbox rm %s)", name, name)}
 	}
+	// Stopped boxes after a daemon restart are not loaded in the engine; count them here.
+	if label := d.e.QuotaLabel(); label != "" && req.Spec.Labels[label] != "" {
+		tenant := req.Spec.Labels[label]
+		if q := d.e.QuotaFor(tenant); q.Boxes > 0 {
+			n := 1
+			for _, o := range d.recs {
+				o.mu.Lock()
+				if o.spec.Labels[label] == tenant {
+					n++
+				}
+				o.mu.Unlock()
+			}
+			if n > q.Boxes {
+				d.mu.Unlock()
+				return nil, &client.Error{Status: 409, Code: "quota", Message: fmt.Sprintf("quota exceeded: tenant %q may have %d boxes", tenant, q.Boxes)}
+			}
+		}
+	}
 	r.op.Lock()
 	d.recs[name] = r
 	d.mu.Unlock()
@@ -371,6 +402,9 @@ func (d *Daemon) create(ctx context.Context, req client.CreateRequest, attached 
 		var be *build.Error
 		if errors.As(err, &be) { // as before with tsbox run: only the build output
 			return nil, &client.Error{Status: 400, Code: "build", Message: be.Error()}
+		}
+		if errors.Is(err, tsbox.ErrQuotaExceeded) {
+			return nil, &client.Error{Status: 409, Code: "quota", Message: err.Error()}
 		}
 		return nil, invalid(err)
 	}
@@ -433,6 +467,9 @@ func (d *Daemon) start(ctx context.Context, r *record, env map[string]string) er
 	d.save(r)
 	r.mu.Unlock()
 	if err != nil {
+		if errors.Is(err, tsbox.ErrQuotaExceeded) {
+			return &client.Error{Status: 409, Code: "quota", Message: err.Error()}
+		}
 		return &client.Error{Status: 500, Code: "internal", Message: err.Error()}
 	}
 	d.wg.Add(1)
@@ -445,7 +482,7 @@ func (d *Daemon) watch(r *record, b *tsbox.Box) {
 	defer d.wg.Done()
 	st, _ := b.Wait(context.Background())
 	r.mu.Lock()
-	if r.box != b || r.removed {
+	if r.box != b || r.removed || r.updating {
 		r.mu.Unlock()
 		return
 	}

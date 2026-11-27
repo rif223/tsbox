@@ -8,6 +8,7 @@
 package client
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/rif223/tsbox"
@@ -47,6 +48,31 @@ type CreateRequest struct {
 	// Env holds the values of the "env:<NAME>" secrets named in the specification, from the caller's
 	// environment. The daemon keeps them in memory only; they never appear in the state, inspect or logs.
 	Env map[string]string `json:"env,omitempty"`
+}
+
+// UpdateRequest replaces the specification of a box (PUT /v1/boxes/{name}). The daemon builds and checks
+// the new specification while the old box keeps running, then stops it and starts the new one if the old
+// one was running. Name, storage area and log files stay.
+type UpdateRequest struct {
+	Spec tsbox.BoxSpec `json:"spec"`
+	// Env adds or replaces values of env: secrets (see CreateRequest.Env); known values are kept.
+	Env map[string]string `json:"env,omitempty"`
+	// Grace is the deadline for the old scripts, e.g. "10s" ("" = default).
+	Grace string `json:"grace,omitempty"`
+}
+
+// EmitRequest sends an event to the scripts of a running box (POST /v1/boxes/{name}/emit). Defaults: SDK
+// "inbox", event "message"; payload for inbox is {"topic": "...", "data": ...}.
+type EmitRequest struct {
+	SDK     string          `json:"sdk,omitempty"`
+	Event   string          `json:"event,omitempty"`
+	Script  string          `json:"script,omitempty"` // "" = all scripts that subscribed
+	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
+// EmitResult says to how many scripts the event was queued.
+type EmitResult struct {
+	Delivered int `json:"delivered"`
 }
 
 // Box is a box from the daemon's point of view (ps).
@@ -110,6 +136,7 @@ const (
 	EventBoxCreated tsbox.EventKind = "box_created"
 	EventBoxRemoved tsbox.EventKind = "box_removed"
 	EventBoxStopped tsbox.EventKind = "box_stopped"
+	EventBoxUpdated tsbox.EventKind = "box_updated"
 )
 
 // Label for projects (tsbox.json).

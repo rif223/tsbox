@@ -44,6 +44,9 @@ func daemonCmd(args []string) int {
 	profiles := fs.String("profiles", "", "directory of named profiles (default: TSBOX_PROFILES or /var/lib/tsbox/profiles)")
 	platform := fs.String("platform", "", "gVisor platform: systrap | kvm (default: TSBOX_PLATFORM, else systrap, or kvm where systrap cannot start a sandbox)")
 	oomAdj := fs.Int("oom-score-adj", tsbox.DefaultOOMScoreAdj, "oom_score_adj of the box processes (Linux; 0 = unchanged)")
+	tenantLabel := fs.String("tenant-label", os.Getenv("TSBOX_TENANT_LABEL"), "label that groups boxes into tenants for --tenant-quota (default: TSBOX_TENANT_LABEL)")
+	tenantQuota := fs.String("tenant-quota", os.Getenv("TSBOX_TENANT_QUOTA"), "quota per tenant, e.g. boxes=10,memory=2Gi,cpu=4,pids=1024 (default: TSBOX_TENANT_QUOTA)")
+	metricsAddr := fs.String("metrics-addr", os.Getenv("TSBOX_METRICS_ADDR"), "also serve GET /metrics (Prometheus, read-only) on this TCP address, e.g. 127.0.0.1:9464 (default: TSBOX_METRICS_ADDR)")
 	usageFor(fs, "daemon [flags] | daemon stop [-f]   (tsboxd: local API for ps, logs, stats, ...)")
 	if _, ok := parsePos(fs, args, 0, 0); !ok {
 		return 2
@@ -98,6 +101,19 @@ func daemonCmd(args []string) int {
 		}
 		cfg.Engine = append(cfg.Engine, tsbox.WithFirecrackerJailer(*fcJailer))
 	}
+	if (*tenantLabel == "") != (*tenantQuota == "") {
+		fmt.Fprintln(os.Stderr, "tsbox daemon: --tenant-label and --tenant-quota only work together")
+		return 2
+	}
+	if *tenantQuota != "" {
+		q, err := tsbox.ParseQuota(*tenantQuota)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "tsbox daemon: --tenant-quota:", err)
+			return 2
+		}
+		cfg.Engine = append(cfg.Engine, tsbox.WithTenantQuotas(*tenantLabel, func(string) tsbox.Quota { return q }))
+	}
+	cfg.MetricsAddr = *metricsAddr
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := daemon.Run(ctx, cfg); err != nil {

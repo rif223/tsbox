@@ -1,0 +1,21 @@
+{
+  "name": "inbox",
+  "version": "0.1.0",
+  "tsbox": "^0.1",
+  "description": "Messages between the host and the script: the host sends events in, the script sends messages out",
+  "provider": { "builtin": "inbox" },
+  "methods": {
+    "send": {
+      "rate": "20/s",
+      "burst": 40,
+      "concurrency": 8,
+      "maxParams": "16Ki",
+      "maxResult": "64",
+      "timeout": "5s",
+      "description": "message to the host (event script_message)"
+    }
+  },
+  "events": {
+    "message": { "description": "message from the host (tsbox emit, POST /v1/boxes/{name}/emit, Box.Emit)" }
+  }
+}

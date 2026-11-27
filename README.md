@@ -89,6 +89,9 @@ tsbox logs -f --since 10m bot                        # log files per script (2 �
 tsbox stats                                          # live table: RAM/LIMIT, CPU, PIDS, RESTARTS, UPTIME
 tsbox stop bot · tsbox start bot · tsbox restart bot · tsbox rm -f bot
 tsbox inspect bot                                    # JSON without secret values
+tsbox update bot                                     # rebuild from the changed files, then swap (old one runs until the build passed)
+tsbox update --mem 256Mi --entry bot2.ts bot         # … or with new limits, entry, params, or --spec box.json
+tsbox emit bot reload '{"force":true}'               # message to the scripts (@tsbox/inbox)
 tsbox events --since 1h
 tsbox up -d · tsbox down                             # project from tsbox.json (several boxes)
 tsbox doctor                                         # runsc, cgroup v2, rootfs, Deno, daemon, isolation?
@@ -135,6 +138,33 @@ import { call, keepAlive, on, ready, script, SdkError } from "@tsbox/core";
 console.log(script.name, script.params);  // console.* and Deno.stdout end up in the log
 ```
 
+Bundled SDKs (`--sdk <name>`): `log`, `kv`, `http`, `inbox`, `cron` and the template `echo`.
+
+```ts
+import { kv } from "@tsbox/kv";        // per-script store: versions, counters, TTL, paging
+await kv.incr("visits");
+await kv.set("session:42", { user: 1 }, { ttl: 60_000 });
+const e = await kv.getEntry<number>("n");
+await kv.set("n", (e?.value ?? 0) + 1, { ifVersion: e?.version ?? 0 });   // false if someone else wrote
+
+import { inbox } from "@tsbox/inbox";  // tsbox emit <box> <topic> [json] → here; send → event script_message
+inbox.on((m) => inbox.send("ack", m.topic));
+
+import { cron } from "@tsbox/cron";    // --grant 'cron:schedule=nightly=0 3 * * *' --grant 'cron:schedule=@every 5m'
+cron.on("nightly", () => cleanup());
+```
+
+## Operating tsboxd for several users
+
+- **Metrics:** `GET /v1/metrics` (Prometheus) on the socket; `tsbox daemon --metrics-addr 127.0.0.1:9464`
+  additionally serves only `/metrics` over TCP (box names, states, RAM/CPU, restarts, SDK calls by result).
+- **Tenant quotas:** `tsbox daemon --tenant-label tenant --tenant-quota boxes=10,memory=2Gi,cpu=4` groups boxes by
+  the label `tenant` and limits each group (boxes counted always, resources of running boxes).
+  `GET /v1/tenants` shows usage. The socket stays the only access to the API: put your own authenticated API in
+  front of it for untrusted users.
+- **Own kv storage:** embedding applications pass `tsbox.WithKVStore(myStore)` (interface `kvstore.Store`), e.g.
+  to keep kv data in PostgreSQL.
+
 ## As a Go library
 
 ```go
@@ -151,7 +181,8 @@ func main() {
 ```
 
 For a running daemon there is the package `client` (`client.New(client.Hosts()[0])`, then `List`, `Create`,
-`Attach`, `Logs`, `Stats`, `Events`, …).
+`Attach`, `Update`, `Emit`, `Logs`, `Stats`, `Events`, …). The engine itself has `Engine.Update`, `Box.Emit`,
+`Engine.SDKCalls`, `Engine.Tenants` and the options `WithTenantQuotas` and `WithKVStore`.
 
 ## What is enforced
 

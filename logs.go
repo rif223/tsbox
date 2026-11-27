@@ -270,6 +270,7 @@ func (e *Engine) Remove(ctx context.Context, name string, force bool) error {
 	if known {
 		e.forget(name, b)
 	}
+	e.calls.forget(name)
 	return nil
 }
 

@@ -1,0 +1,28 @@
+{
+  "name": "cron",
+  "version": "0.1.0",
+  "tsbox": "^0.1",
+  "description": "Schedules granted by the operator become tick events (cron expressions, @daily, @every 30s)",
+  "provider": { "builtin": "cron" },
+  "config": {
+    "timezone": {
+      "type": "string",
+      "default": "UTC",
+      "description": "IANA time zone of the cron expressions, e.g. Europe/Berlin"
+    }
+  },
+  "permissions": {
+    "schedule": {
+      "type": "string",
+      "multiple": true,
+      "required": true,
+      "description": "schedule as [name=]expression, e.g. nightly=0 3 * * * or @every 5m (at most 32)"
+    }
+  },
+  "methods": {
+    "next": { "rate": "5/s", "burst": 10, "concurrency": 2, "maxParams": "64", "maxResult": "16Ki", "timeout": "5s" }
+  },
+  "events": {
+    "tick": { "description": "a schedule is due: {name, schedule, scheduled, at} (milliseconds)" }
+  }
+}

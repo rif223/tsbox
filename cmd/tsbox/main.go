@@ -58,6 +58,10 @@ func main() {
 		code = lifecycleCmd(os.Args[1], os.Args[2:])
 	case "inspect":
 		code = inspectCmd(os.Args[2:])
+	case "update":
+		code = updateCmd(os.Args[2:])
+	case "emit":
+		code = emitCmd(os.Args[2:])
 	case "events":
 		code = eventsCmd(os.Args[2:])
 	case "up":
@@ -115,6 +119,8 @@ Commands:
   stop|start|restart <box>       stop, start, restart a box
   rm [-f] <box>                  remove a box
   inspect <box>                  specification and status (without secrets)
+  update [flags] <box>           rebuild a box from its changed files or a new spec, then swap it
+  emit <box> <topic> [json]      send a message to the scripts of a box (@tsbox/inbox)
   events [--since]               follow events
   up [-d] / down                 start / remove a project from tsbox.json
   daemon [start|stop]            tsboxd in the foreground / start it in the background / end it

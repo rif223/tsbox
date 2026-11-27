@@ -196,6 +196,8 @@ const (
 	EventIntegrityFailed EventKind = "integrity_failed"
 	EventOOM             EventKind = "oom"
 	EventViolation       EventKind = "violation"
+	// EventScriptMessage: a script sent a message with @tsbox/inbox (Detail = topic, Payload = data).
+	EventScriptMessage EventKind = "script_message"
 )
 
 // Event is an event for embedding applications (asynchronous, never blocks the engine).
@@ -206,6 +208,8 @@ type Event struct {
 	Script string      `json:"script,omitempty"`
 	Exit   *ExitStatus `json:"exit,omitempty"`
 	Detail string      `json:"detail,omitempty"`
+	// Payload carries the data of a script_message (JSON, at most 16 KiB).
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 // LogLine is a log line of a script. Level: debug, info, warn, error, stderr.
