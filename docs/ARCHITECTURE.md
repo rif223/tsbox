@@ -58,7 +58,7 @@ TB   build sandbox (gVisor, no network, UID 65534, sources ro, output via stdout
 | Client | `client/` (public) | Go client of the API, addresses (`Hosts`, `UserHost`) |
 | Project | `internal/project` | parser for `tsbox.json` |
 | tsbox-init | `internal/initbox` (role `tsbox __init` of the same binary) | script processes, integrity, per-script limits, `sid` from the pipe |
-| Drivers | `internal/driver/{gvisor,firecracker,dev,cgroup}` | start the sandbox, channel, stats, `cgroup.kill`, build sandbox |
+| Drivers | `internal/driver/{gvisor,firecracker,dev,cgroup}` | start the sandbox, channel, stats, `cgroup.kill`, build sandbox; box cgroups below `/sys/fs/cgroup/tsbox/<8 hex digits of the state directory>/<box>`, so engines with different state directories never share one |
 | Guest of the firecracker driver | `internal/fcguest`, `internal/fcproto` | PID 1 in the microVM (`__fcinit`), rights before exec (`__fcexec`), vsock protocol host ↔ guest |
 | Build | `internal/build` | `deno bundle --check --no-remote --no-npm`, boot entry, import map, artifact store, build cache by input hash |
 | Protocol | `internal/proto`, `js/core/frames.ts` | frames `u32 BE | JSON`, ≤ 1 MiB, strict |
@@ -332,7 +332,7 @@ If the process dies, open calls fail with `unavailable`; the next open restarts 
 | SDK | Provider | Content |
 |---|---|---|
 | `log` | builtin | structured lines with fields |
-| `kv` | builtin | get/set/delete/list/incr per storage and script, versions for compare-and-set (`ifVersion`), TTL, paged lists (`after`, `limit`), quota 1 MiB, value ≤ 64 KiB; storage behind `kvstore.Store` (default JSON file `<state>/kv/<storage>/v2/<script>.json`; files of 0.3 are migrated) |
+| `kv` | builtin | get/set/delete/list/incr per storage and script, versions for compare-and-set (`ifVersion`), TTL, paged lists (`after`, `limit`), quota 1 MiB, value ≤ 64 KiB; storage behind `kvstore.Store` (default: snapshot `<state>/kv/<storage>/v2/<script>.json` plus a synced journal `<script>.log`, one line per change, compacted once larger than the snapshot; files of 0.3 are migrated) |
 | `http` | builtin | fetch: host allowlist, https only, IP check while connecting (against SSRF and DNS rebinding), redirects checked, no proxy, no cookies, size and time limit |
 | `echo` | external (Deno) | template for external providers with events |
 | `inbox` | builtin | messages host ⇄ script: event `message` from `Box.Emit`/`tsbox emit`, method `send` → engine event `script_message` |
@@ -361,7 +361,7 @@ If the process dies, open calls fail with `unavailable`; the next open restarts 
 - External providers are trusted code.
 - Bugs in gVisor or the kernel; side channels between boxes.
 - A compromised init can impersonate scripts of the same box (the box is the trust domain).
-- The per-script RSS limit is only approximate under gVisor (`VmRSS − baseline`, spike finding 1).
+- The per-script RSS limit is only approximate under gVisor (`VmRSS − baseline`, spike finding 1). init measures the baseline (VmRSS of an empty Deno, about 1 s) only at the first start of a rootfs and init binary; the engine keeps the value in `<state>/baseline-rss.json` and passes it to later starts. An idle script therefore reports 0 RSS.
 - Access to tsboxd corresponds to the `docker` group: whoever reaches the socket starts boxes with the daemon's rights. The system daemon runs as root and reads script, SDK and `file:` paths with root rights.
 - Installed SDKs live in the daemon's state; a user's `tsbox sdk add` does not affect the system daemon.
 

@@ -36,13 +36,33 @@ versions are the tags `v<version>` (see CONTRIBUTING.md, Releases).
 
 ### Changed
 
-- **kv on-disk format:** data now lives in `<state>/kv/<storage>/v2/<script>.json` with versions and expiry.
+- **Box cgroups per engine:** gVisor and Firecracker put boxes below `/sys/fs/cgroup/tsbox/<8 hex digits of the
+  state directory>/<box>` instead of `/sys/fs/cgroup/tsbox/<box>`.
+- **gVisor start ~1 s faster:** init measures the RSS baseline of an empty Deno only at the first start of a
+  rootfs and init binary; later starts get the remembered value (`<state>/baseline-rss.json`). Until init
+  ready: 1.3 s → 0.26 s; one script ready: 1.67 s → 0.62 s.
+- **External SDK providers** end one minute after their last session (`extproc.Config.IdleTimeout`) instead of
+  running until the engine closes; the next use starts them again.
+
+- **kv on-disk format:** data now lives in `<state>/kv/<storage>/v2/` as a snapshot `<script>.json` (versions and
+  expiry) plus a journal `<script>.log`: a write appends one synced line instead of rewriting the namespace
+  (200 small writes to a full 1 MiB namespace: 2 s → 0.24 s), the snapshot is rewritten atomically and synced
+  once the journal is larger. A torn last journal line is dropped; a damaged snapshot is moved aside
+  (`.damaged-<time>`) instead of blocking the namespace.
   Files of tsbox ≤ 0.3 (`<state>/kv/<storage>/<script>.json`) are migrated on first access and then removed, so
   an older tsbox no longer sees the data after an upgrade. Back up `<state>/kv` before upgrading if you might
   go back.
 
 ### Fixed
 
+- Two engines or daemons with different state directories shared the cgroup of a box name: under gVisor the
+  second box ran with the limits of the first, and killing one ended both; under Firecracker the second did not
+  start.
+- `Box.Stop` while the box was starting returned "does not end" after 20 s, and the box then ran anyway. Stop now
+  ends a starting box (Start returns "stopped while starting").
+- kv: no fsync before replacing the file; a damaged file made the namespace unusable.
+- An external provider got two `close` frames for one session on some paths; a session whose open timed out
+  stayed registered.
 - A CPU limit of NaN passed `Limits.Validate` (every comparison with NaN is false; reachable through the Go API,
   not through tsboxd, since JSON cannot carry NaN). With tenant quotas it also turned the CPU sum into NaN, so
   every later CPU quota check passed.
