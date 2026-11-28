@@ -17,8 +17,23 @@ import (
 // Namespace identifies the data of one script in one storage area. Both names are already validated
 // ([a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}).
 type Namespace struct {
-	Storage string
-	Script  string
+	Storage string `json:"storage"`
+	Script  string `json:"script"`
+}
+
+// NamespaceInfo describes the data of one namespace, for overviews (GET /v1/kv).
+type NamespaceInfo struct {
+	Namespace
+	Keys     int       `json:"keys"`              // unexpired keys
+	Bytes    int64     `json:"bytes"`             // keys + values of the unexpired entries (what counts against the quota)
+	Modified time.Time `json:"modified,omitzero"` // last change, if the store knows it
+}
+
+// Lister is implemented by stores that can enumerate their namespaces. It is optional: without it, tsboxd
+// cannot list the stored data (GET /v1/kv answers "not_supported"), reading one namespace still works.
+type Lister interface {
+	// Namespaces returns all namespaces that hold data, sorted by storage area and script.
+	Namespaces(ctx context.Context) ([]NamespaceInfo, error)
 }
 
 // Entry is a stored value.

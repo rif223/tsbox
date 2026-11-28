@@ -11,6 +11,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	logprov "github.com/rif223/tsbox/internal/providers/log"
+	"github.com/rif223/tsbox/kvstore"
 )
 
 func TestSDKKVVersionsAndTTL(t *testing.T) {
@@ -22,6 +25,57 @@ func TestSDKKVVersionsAndTTL(t *testing.T) {
 	}
 	expectLogs(t, rec, "KV2 incr 1 5", "KV2 create-only true false", "KV2 cas true false", "KV2 ttl undefined",
 		"KV2 page p0,p1 true all p0,p1,p2,p3,p4")
+
+	// Operators read the same data through the engine (tsboxd: GET /v1/kv).
+	ctx := context.Background()
+	list, err := e.KVNamespaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, n := range list {
+		if n.Storage == spec.Storage && n.Script == "main" {
+			found = n.Keys == 7 && n.Bytes > 0 // n, c, p0..p4 (t expired)
+		}
+	}
+	if !found {
+		t.Fatalf("namespace %s/main missing or wrong in %+v", spec.Storage, list)
+	}
+	ns := kvstore.Namespace{Storage: spec.Storage, Script: "main"}
+	var keys []string
+	after := ""
+	for page := 0; ; page++ {
+		entries, more, err := e.KVEntries(ctx, ns, after, 3)
+		if err != nil || len(entries) == 0 || len(entries) > 3 {
+			t.Fatalf("page %d: %v %+v", page, err, entries)
+		}
+		for _, en := range entries {
+			keys = append(keys, en.Key)
+			if en.Key == "c" && (string(en.Value) != "3" || en.Version == 0) {
+				t.Fatalf("c = %+v", en)
+			}
+		}
+		after = entries[len(entries)-1].Key
+		if !more {
+			break
+		}
+	}
+	if strings.Join(keys, ",") != "c,n,p0,p1,p2,p3,p4" {
+		t.Fatalf("keys %v", keys)
+	}
+	if _, _, err := e.KVEntries(ctx, kvstore.Namespace{Storage: "../x", Script: "main"}, "", 0); !errors.Is(err, ErrKVInvalidName) {
+		t.Fatalf("invalid name: %v", err)
+	}
+}
+
+func TestKVReplacedProvider(t *testing.T) {
+	e, _ := newEngine(t, WithProvider("kv", logprov.Provider{}))
+	if _, err := e.KVNamespaces(context.Background()); !errors.Is(err, ErrKVUnavailable) {
+		t.Fatalf("KVNamespaces: %v", err)
+	}
+	if _, _, err := e.KVEntries(context.Background(), kvstore.Namespace{Storage: "a", Script: "b"}, "", 0); !errors.Is(err, ErrKVUnavailable) {
+		t.Fatalf("KVEntries: %v", err)
+	}
 }
 
 func (r *recorder) find(kind EventKind) []Event {

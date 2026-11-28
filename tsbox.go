@@ -22,7 +22,7 @@ import (
 // Version of tsbox. Release builds set it from the tag:
 //
 //	go build -ldflags "-X github.com/rif223/tsbox.Version=0.3.0" ./cmd/tsbox
-var Version = "0.4.0-dev"
+var Version = "0.4.1-dev"
 
 // Init runs the internal roles of the binary (tsbox-init in the box, UID switch, test probe) and then
 // exits the process. Otherwise it returns immediately. Must be at the beginning of main.

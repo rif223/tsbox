@@ -422,3 +422,90 @@ func writeSynced(path string, b []byte) error {
 	}
 	return err
 }
+
+// Namespaces lists the namespaces below root in both layouts (tsbox ≤ 0.3 and v2). Listing loads each one,
+// which migrates files of tsbox ≤ 0.3 as any other access does.
+func (s *FileStore) Namespaces(ctx context.Context) ([]NamespaceInfo, error) {
+	storages, err := os.ReadDir(s.root)
+	if os.IsNotExist(err) {
+		return []NamespaceInfo{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var found []Namespace
+	for _, st := range storages {
+		if !st.IsDir() || !validName(st.Name()) {
+			continue
+		}
+		seen := map[string]bool{}
+		add := func(dir string, suffixes ...string) {
+			files, _ := os.ReadDir(dir)
+			for _, f := range files {
+				for _, suf := range suffixes {
+					if name, ok := strings.CutSuffix(f.Name(), suf); ok && !f.IsDir() && validName(name) && !seen[name] {
+						seen[name] = true
+						found = append(found, Namespace{Storage: st.Name(), Script: name})
+					}
+				}
+			}
+		}
+		add(filepath.Join(s.root, st.Name(), "v2"), ".json", ".log")
+		add(filepath.Join(s.root, st.Name()), ".json")
+	}
+	now := s.now()
+	out := make([]NamespaceInfo, 0, len(found))
+	for _, ns := range found {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		n, err := s.get(ns)
+		if err != nil {
+			continue
+		}
+		n.mu.Lock()
+		err = n.load()
+		info := NamespaceInfo{Namespace: ns}
+		if err == nil {
+			for k, e := range n.data {
+				if !expired(e, now) {
+					info.Keys++
+					info.Bytes += Size(k, e)
+				}
+			}
+			for _, p := range []string{n.path, n.journalPath(), n.legacy} {
+				if fi, err := os.Stat(p); err == nil && fi.ModTime().After(info.Modified) {
+					info.Modified = fi.ModTime()
+				}
+			}
+		}
+		n.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		if info.Keys > 0 {
+			out = append(out, info)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Storage != out[j].Storage {
+			return out[i].Storage < out[j].Storage
+		}
+		return out[i].Script < out[j].Script
+	})
+	return out, nil
+}
+
+// validName is the rule for storage areas and script names ([a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}).
+func validName(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for i, r := range s {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || i > 0 && (r == '_' || r == '.' || r == '-')
+		if !ok {
+			return false
+		}
+	}
+	return true
+}

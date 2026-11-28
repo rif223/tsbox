@@ -21,7 +21,7 @@ Needs [Deno](https://deno.com) 2.9 (`deno` in `PATH` or `TSBOX_DENO`).
 
 ```bash
 # Linux amd64 (other systems: pick the matching archive; Windows: .zip)
-V=0.4.0
+V=0.4.1
 curl -fLO "https://github.com/rif223/tsbox/releases/download/v$V/tsbox_${V}_linux_amd64.tar.gz"
 curl -fLO "https://github.com/rif223/tsbox/releases/download/v$V/SHA256SUMS"
 sha256sum --check --ignore-missing SHA256SUMS
@@ -162,6 +162,8 @@ cron.on("nightly", () => cleanup());
   the label `tenant` (`tsbox run --label tenant=a ...`) and limits each group (boxes counted always, resources of running boxes).
   `GET /v1/tenants` shows usage. The socket stays the only access to the API: put your own authenticated API in
   front of it for untrusted users.
+- **kv data:** `GET /v1/kv` lists what scripts stored (per storage area and script), `GET /v1/kv/{storage}/{script}`
+  returns the entries, read-only.
 - **Own kv storage:** embedding applications pass `tsbox.WithKVStore(myStore)` (interface `kvstore.Store`), e.g.
   to keep kv data in PostgreSQL.
 

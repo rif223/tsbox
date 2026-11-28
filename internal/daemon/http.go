@@ -16,6 +16,7 @@ import (
 
 	"github.com/rif223/tsbox"
 	"github.com/rif223/tsbox/client"
+	"github.com/rif223/tsbox/kvstore"
 )
 
 const maxBody = 4 << 20
@@ -37,6 +38,8 @@ func (d *Daemon) routes() http.Handler {
 	m.HandleFunc("GET /v1/events", d.hEvents)
 	m.HandleFunc("GET /v1/metrics", d.hMetrics)
 	m.HandleFunc("GET /v1/tenants", d.quick(d.hTenants))
+	m.HandleFunc("GET /v1/kv", d.quick(d.hKVList))
+	m.HandleFunc("GET /v1/kv/{storage}/{script}", d.quick(d.hKVEntries))
 	m.HandleFunc("POST /v1/sdks/{name}/release", d.quick(d.hReleaseSDK))
 	m.HandleFunc("POST /v1/shutdown", d.quick(d.hShutdown))
 	return m
@@ -497,6 +500,51 @@ func (d *Daemon) hTenants(w http.ResponseWriter, _ *http.Request) {
 		out = []tsbox.TenantUsage{}
 	}
 	writeJSON(w, 200, out)
+}
+
+// kvErr maps the errors of the kv read access to API errors.
+func kvErr(err error) error {
+	if errors.Is(err, tsbox.ErrKVUnavailable) || errors.Is(err, tsbox.ErrKVNotListable) {
+		return &client.Error{Status: 501, Code: "not_supported", Message: err.Error()}
+	}
+	return err
+}
+
+// hKVList lists the namespaces of @tsbox/kv that hold data (GET /v1/kv).
+func (d *Daemon) hKVList(w http.ResponseWriter, r *http.Request) {
+	out, err := d.e.KVNamespaces(r.Context())
+	if err != nil {
+		writeErr(w, kvErr(err))
+		return
+	}
+	if out == nil {
+		out = []kvstore.NamespaceInfo{}
+	}
+	writeJSON(w, 200, out)
+}
+
+// hKVEntries returns a page of the entries of one namespace (GET /v1/kv/{storage}/{script}?after=&limit=).
+func (d *Daemon) hKVEntries(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit := 0
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			writeErr(w, &client.Error{Status: 400, Code: "invalid", Message: "limit: a positive number"})
+			return
+		}
+		limit = n
+	}
+	ns := kvstore.Namespace{Storage: r.PathValue("storage"), Script: r.PathValue("script")}
+	entries, more, err := d.e.KVEntries(r.Context(), ns, q.Get("after"), limit)
+	if err != nil {
+		if errors.Is(err, tsbox.ErrKVInvalidName) {
+			err = &client.Error{Status: 400, Code: "invalid", Message: err.Error()}
+		}
+		writeErr(w, kvErr(err))
+		return
+	}
+	writeJSON(w, 200, client.KVPage{Entries: entries, More: more})
 }
 
 func (d *Daemon) hShutdown(w http.ResponseWriter, _ *http.Request) {

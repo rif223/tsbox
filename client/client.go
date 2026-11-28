@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/rif223/tsbox"
+	"github.com/rif223/tsbox/kvstore"
 )
 
 // SystemSocket is the socket of the system daemon (Linux, systemd, group tsbox).
@@ -274,6 +275,31 @@ func (c *Client) Emit(ctx context.Context, name string, req EmitRequest) (int, e
 	var r EmitResult
 	err := c.call(ctx, http.MethodPost, "/boxes/"+url.PathEscape(name)+"/emit", req, &r)
 	return r.Delivered, err
+}
+
+// KVNamespaces lists the namespaces of @tsbox/kv (storage area and script) that hold data. A daemon whose
+// store cannot list them answers with the code "not_supported"; an older tsboxd without this API with HTTP 404.
+func (c *Client) KVNamespaces(ctx context.Context) ([]kvstore.NamespaceInfo, error) {
+	var out []kvstore.NamespaceInfo
+	return out, c.call(ctx, http.MethodGet, "/kv", nil, &out)
+}
+
+// KVEntries returns up to limit entries of one namespace in key order after the key "after" ("" = from the
+// start; limit ≤ 0 = 100, at most tsbox.MaxKVPage). Read-only.
+func (c *Client) KVEntries(ctx context.Context, storage, script, after string, limit int) (KVPage, error) {
+	q := url.Values{}
+	if after != "" {
+		q.Set("after", after)
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	path := "/kv/" + url.PathEscape(storage) + "/" + url.PathEscape(script)
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	var p KVPage
+	return p, c.call(ctx, http.MethodGet, path, nil, &p)
 }
 
 // Stop stops a box; grace is the deadline for the scripts (0 = default).

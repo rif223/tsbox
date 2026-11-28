@@ -172,6 +172,7 @@ type Engine struct {
 
 	reg       *sdkreg.Registry
 	providers map[string]sdk.Provider
+	kv        kvstore.Store // the store of the built-in kv provider; nil if an embedder replaced the provider
 	extMu     sync.Mutex
 	ext       map[string]*extproc.Provider
 	cacheMu   sync.Mutex // build cache of the build sandbox
@@ -260,16 +261,23 @@ func New(ctx context.Context, opts ...Option) (*Engine, error) {
 	if cfg.oomAdj < -1000 || cfg.oomAdj > 1000 {
 		return nil, fmt.Errorf("oom_score_adj %d outside [-1000, 1000]", cfg.oomAdj)
 	}
+	kv := cfg.kvStore
+	if kv == nil {
+		kv = kvstore.NewFileStore(filepath.Join(cfg.stateDir, "kv"))
+	}
 	e := &Engine{cfg: cfg, drivers: map[string]driver.Driver{}, drvErr: map[string]driverErr{}, boxes: map[string]*Box{}, reg: sdkreg.New(cfg.stateDir, cfg.sdkDirs...),
-		ext: map[string]*extproc.Provider{}, providers: map[string]sdk.Provider{
+		ext: map[string]*extproc.Provider{}, kv: kv, providers: map[string]sdk.Provider{
 			"log":  logprov.Provider{},
-			"kv":   kvProvider(cfg),
+			"kv":   kvprov.NewWithStore(kv),
 			"http": httpp.Provider{},
 		}}
 	e.providers["inbox"] = inboxProvider{e}
 	e.providers["cron"] = cronprov.New()
 	for name, p := range cfg.providers {
 		e.providers[name] = p
+	}
+	if _, replaced := cfg.providers["kv"]; replaced {
+		e.kv = nil
 	}
 	e.logw = map[string]*logfile.Writer{}
 	e.buildSlots = map[bool]chan struct{}{true: make(chan struct{}, buildSlots(true)), false: make(chan struct{}, buildSlots(false))}
@@ -299,13 +307,6 @@ func New(ctx context.Context, opts ...Option) (*Engine, error) {
 		}()
 	}
 	return e, nil
-}
-
-func kvProvider(cfg config) sdk.Provider {
-	if cfg.kvStore != nil {
-		return kvprov.NewWithStore(cfg.kvStore)
-	}
-	return kvprov.New(filepath.Join(cfg.stateDir, "kv"))
 }
 
 func selectDriver(cfg config) (driver.Driver, error) {

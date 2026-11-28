@@ -146,3 +146,9 @@ const (
 	LabelSpecHash = "tsbox.spec-hash"
 	LabelDir      = "tsbox.project-dir" // directory of the project file (two projects with the same name)
 )
+
+// KVPage is a page of the entries of one kv namespace (GET /v1/kv/{storage}/{script}).
+type KVPage struct {
+	Entries []tsbox.KVEntry `json:"entries"`
+	More    bool            `json:"more"` // further entries follow: ask again with after = the last key
+}

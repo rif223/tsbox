@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -741,4 +742,38 @@ func (l *lockedBuffer) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.b.String()
+}
+
+// TestKVAPI: the kv data of a box through tsboxd (GET /v1/kv, GET /v1/kv/{storage}/{script}).
+func TestKVAPI(t *testing.T) {
+	c := newCLI(t)
+	c.ok("run", "--sdk", "kv", "--storage", "kvapi", "testdata/sdk/kv2.ts")
+	cl := c.client()
+	defer cl.Close()
+	ctx := context.Background()
+	list, err := cl.KVNamespaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Storage != "kvapi" || list[0].Script != "main" || list[0].Keys != 7 {
+		t.Fatalf("namespaces %+v", list)
+	}
+	p, err := cl.KVEntries(ctx, "kvapi", "main", "", 2)
+	if err != nil || len(p.Entries) != 2 || !p.More || p.Entries[0].Key != "c" || string(p.Entries[0].Value) != "3" {
+		t.Fatalf("first page %+v %v", p, err)
+	}
+	p, err = cl.KVEntries(ctx, "kvapi", "main", "p3", 0)
+	if err != nil || len(p.Entries) != 1 || p.More || p.Entries[0].Key != "p4" {
+		t.Fatalf("last page %+v %v", p, err)
+	}
+	if p, err := cl.KVEntries(ctx, "kvapi", "nope", "", 0); err != nil || len(p.Entries) != 0 {
+		t.Fatalf("unknown script %+v %v", p, err)
+	}
+	var ae *client.Error
+	if _, err := cl.KVEntries(ctx, "-bad", "main", "", 0); !errors.As(err, &ae) || ae.Status != 400 || ae.Code != "invalid" {
+		t.Fatalf("invalid name: %v", err)
+	}
+	if _, err := cl.KVEntries(ctx, "kvapi", "main", "", -1); err != nil {
+		t.Fatalf("limit -1 means the default: %v", err)
+	}
 }

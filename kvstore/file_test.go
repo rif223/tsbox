@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
@@ -93,5 +95,57 @@ func TestFileStoreConcurrentIncrements(t *testing.T) {
 	wg.Wait()
 	if e, _, _ := s.Get(ctx, ns, "n"); string(e.Value) != "200" {
 		t.Fatalf("lost updates: %s", e.Value)
+	}
+}
+
+func TestFileStoreNamespaces(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	s := NewFileStore(root)
+	now := time.Unix(1000, 0)
+	s.now = func() time.Time { return now }
+	set := func(ns Namespace, key, v string, exp time.Time) {
+		t.Helper()
+		if _, err := s.Update(ctx, ns, key, 1<<20, func(*Entry) (*Entry, error) {
+			return &Entry{Value: json.RawMessage(v), Expires: exp}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set(Namespace{"Shop", "orders"}, "a", `1`, time.Time{})
+	set(Namespace{"Shop", "orders"}, "b", `"xy"`, now.Add(time.Hour))
+	set(Namespace{"Shop", "orders"}, "gone", `0`, now.Add(time.Second))
+	set(Namespace{"only-expired", "main"}, "x", `1`, now.Add(time.Second))
+	// tsbox ≤ 0.3, not accessed yet
+	if err := os.MkdirAll(filepath.Join(root, "old"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "old", "main.json"), []byte(`{"k":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// not namespaces
+	_ = os.WriteFile(filepath.Join(root, "old", "x.json.damaged-1"), []byte(`{`), 0o600)
+	_ = os.MkdirAll(filepath.Join(root, ".hidden"), 0o700)
+	now = now.Add(2 * time.Second)
+
+	got, err := s.Namespaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Storage != "Shop" || got[1].Storage != "old" {
+		t.Fatalf("namespaces %+v", got)
+	}
+	if g := got[0]; g.Script != "orders" || g.Keys != 2 || g.Bytes != int64(len("a1")+len(`b"xy"`)) || g.Modified.IsZero() {
+		t.Fatalf("Shop/orders %+v", g)
+	}
+	if g := got[1]; g.Script != "main" || g.Keys != 1 {
+		t.Fatalf("old/main %+v", g)
+	}
+	// listing migrated the old file like any access
+	if _, err := os.Stat(filepath.Join(root, "old", "main.json")); !os.IsNotExist(err) {
+		t.Fatalf("old file still there: %v", err)
+	}
+	if empty, err := NewFileStore(filepath.Join(root, "missing")).Namespaces(ctx); err != nil || len(empty) != 0 {
+		t.Fatalf("missing root: %v %v", empty, err)
 	}
 }

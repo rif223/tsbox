@@ -5,6 +5,17 @@ versions are the tags `v<version>` (see CONTRIBUTING.md, Releases).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-28
+
+### Added
+
+- **Reading kv data as an operator:** `GET /v1/kv` lists the storage areas and scripts that hold data (keys, bytes,
+  last change), `GET /v1/kv/{storage}/{script}?after=&limit=` returns their entries page by page (value, version,
+  expiry; at most 500 per page). Read-only, on the socket like the rest of the API, so tools such as a web UI no
+  longer need file access to `<state>/kv` (root only under `tsbox setup`). Go: `Engine.KVNamespaces`,
+  `Engine.KVEntries`, `client.KVNamespaces`, `client.KVEntries`. Stores of `WithKVStore` can implement the new
+  optional interface `kvstore.Lister` for the list (`FileStore` does); without it the list answers `not_supported`.
+
 ## [0.4.0] - 2026-11-28
 
 ### Added
