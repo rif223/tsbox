@@ -20,8 +20,9 @@ var ErrNotRunning = errors.New("box is not running")
 
 // Emit delivers an event of an active SDK from the host to the scripts of the box that subscribed to it
 // (@tsbox/core's on(sdk, event, …)); script "" means all scripts. It returns the number of scripts the
-// event was queued for. Like events of providers, it never blocks: with a full queue the event is dropped
-// for that script (counted in BoxStatus.DroppedEvents).
+// event was queued for. Like events of providers, it never blocks: the event goes to all recipients as one
+// frame through the box's queue to init, so with a full queue it is dropped for all of them, Emit returns 0
+// and BoxStatus.DroppedEvents grows by one.
 //
 // The host is trusted (T0): Emit is for embedding applications and tsboxd, never reachable from a box. The
 // usual channel is the bundled SDK inbox (sdk "inbox", event "message", payload {"topic": …, "data": …}).
