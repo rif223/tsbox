@@ -136,7 +136,7 @@ secrets. Bind it to loopback or a monitoring network: box names may be sensitive
 **Tenant quotas:** `--tenant-label` names a label (e.g. `tenant`), `--tenant-quota` the quota every tenant gets.
 `boxes` counts all boxes of the tenant (also stopped ones, also those the daemon has not loaded since its start);
 `memory`, `cpu` and `pids` add up the box limits of running boxes and are checked at every start and update.
-Boxes without the label have no quota. The error code is `quota` (HTTP 409).
+Labels are set with `tsbox run --label key=value` (keys `tsbox.*` are reserved). Boxes without the label have no quota. The error code is `quota` (HTTP 409).
 
 **State:** `<state>/boxes/<name>/tsboxd.json` (specification with absolute paths and references
 `file:`/`env:`, desired state, last status), `artifacts/`, `logs/<script>.log` + `.log.1` (JSON lines, rotation

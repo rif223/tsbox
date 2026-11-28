@@ -159,7 +159,7 @@ cron.on("nightly", () => cleanup());
 - **Metrics:** `GET /v1/metrics` (Prometheus) on the socket; `tsbox daemon --metrics-addr 127.0.0.1:9464`
   additionally serves only `/metrics` over TCP (box names, states, RAM/CPU, restarts, SDK calls by result).
 - **Tenant quotas:** `tsbox daemon --tenant-label tenant --tenant-quota boxes=10,memory=2Gi,cpu=4` groups boxes by
-  the label `tenant` and limits each group (boxes counted always, resources of running boxes).
+  the label `tenant` (`tsbox run --label tenant=a ...`) and limits each group (boxes counted always, resources of running boxes).
   `GET /v1/tenants` shows usage. The socket stays the only access to the API: put your own authenticated API in
   front of it for untrusted users.
 - **Own kv storage:** embedding applications pass `tsbox.WithKVStore(myStore)` (interface `kvstore.Store`), e.g.
