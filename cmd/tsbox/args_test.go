@@ -157,3 +157,19 @@ func TestSecondsFlag(t *testing.T) {
 		}
 	}
 }
+
+func TestParseLabels(t *testing.T) {
+	got, err := parseLabels([]string{"tenant=a", "team=x=y", "empty="})
+	if err != nil || len(got) != 3 || got["tenant"] != "a" || got["team"] != "x=y" || got["empty"] != "" {
+		t.Fatalf("%v %v", got, err)
+	}
+	if got, err := parseLabels(nil); got != nil || err != nil {
+		t.Fatalf("no labels: %v %v", got, err)
+	}
+	for _, bad := range [][]string{{"tenant"}, {"=a"}, {"tsbox.project=p"}, {"a b=c"}, {"k=1", "k=2"},
+		{"k=" + strings.Repeat("v", 257)}} {
+		if _, err := parseLabels(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

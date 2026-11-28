@@ -236,6 +236,8 @@ func run(args []string) int {
 	quiet := fs.Bool("q", false, "no status messages from tsbox (the warning about missing isolation stays)")
 	storage := fs.String("storage", "", "storage area for kv (default: the script's file name)")
 	prof := fs.String("profile", "", "profile (rootfs under gVisor, default: default; tsbox doctor lists them)")
+	var labelArgs multi
+	fs.Var(&labelArgs, "label", "label of the box: key=value, e.g. tenant=a for tsbox daemon --tenant-quota (repeatable)")
 	var sf sdkFlags
 	sf.register(fs)
 	usageFor(fs, "run <script.ts> [flags]")
@@ -325,13 +327,17 @@ func run(args []string) int {
 	if err != nil {
 		return bad("%v", err)
 	}
+	labels, err := parseLabels(labelArgs)
+	if err != nil {
+		return bad("--label: %v", err)
+	}
 
 	if entry, err = filepath.Abs(entry); err != nil {
 		return fail("%v", err)
 	}
 	absRefs(uses)
 	spec := tsbox.BoxSpec{
-		Name: *name, Limits: limits, Restart: policy, SDKs: uses, Storage: *storage, Profile: *prof, Driver: *drv,
+		Name: *name, Limits: limits, Restart: policy, SDKs: uses, Storage: *storage, Profile: *prof, Driver: *drv, Labels: labels,
 		Scripts: []tsbox.ScriptSpec{{Name: "main", Entry: entry, Limits: sl, Params: rawParams}},
 	}
 	if err := spec.Validate(); err != nil {
@@ -588,4 +594,32 @@ func notFound(entry string) string {
 		msg += " (did you mean " + strings.Join(found, " or ") + "?)"
 	}
 	return msg
+}
+
+var labelKey = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$`)
+
+// parseLabels reads key=value labels of tsbox run. Keys starting with "tsbox." are reserved (projects).
+func parseLabels(args []string) (map[string]string, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	out := map[string]string{}
+	for _, a := range args {
+		k, v, ok := strings.Cut(a, "=")
+		switch {
+		case !ok:
+			return nil, fmt.Errorf("%q: expected key=value", a)
+		case !labelKey.MatchString(k):
+			return nil, fmt.Errorf("key %q: letters, digits, _ . - (at most 63 characters)", k)
+		case strings.HasPrefix(k, "tsbox."):
+			return nil, fmt.Errorf("key %q: the prefix tsbox. is reserved", k)
+		case len(v) > 256:
+			return nil, fmt.Errorf("value of %q longer than 256 characters", k)
+		}
+		if _, dup := out[k]; dup {
+			return nil, fmt.Errorf("key %q given twice", k)
+		}
+		out[k] = v
+	}
+	return out, nil
 }
