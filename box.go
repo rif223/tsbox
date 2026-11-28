@@ -812,7 +812,17 @@ func (b *Box) watchdog(drv driver.Box, gen int) {
 				}
 			}
 			b.sendLocked(&proto.Frame{T: proto.TPing, ID: b.pingID})
-			stats, err := drv.Stats(context.Background())
+			b.mu.Unlock()
+			// Outside the lock: under Firecracker Stats is a vsock round trip (up to 3 s with a hanging guest), and
+			// dispatch, Status and the API must not wait for it.
+			sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			stats, err := drv.Stats(sctx)
+			cancel()
+			b.mu.Lock()
+			if b.gen != gen {
+				b.mu.Unlock()
+				return
+			}
 			if err == nil {
 				if !b.lastStats.At.IsZero() {
 					if dt := stats.At.Sub(b.lastStats.At); dt > 0 {
