@@ -63,7 +63,9 @@ func TestBaselineRSSReused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rss := st.Scripts[0].RSS; rss <= 0 || rss > 64<<20 {
+	// VmRSS − baseline: an idle script is at or below it (0). Without the baseline it would be the mapped Deno
+	// binary, about 110 MiB.
+	if rss := st.Scripts[0].RSS; rss < 0 || rss > 64<<20 {
 		t.Fatalf("RSS of an idle script with the remembered baseline: %d", rss)
 	}
 }
