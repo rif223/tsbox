@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/rif223/tsbox/internal/denobin"
+	"github.com/rif223/tsbox/internal/driver/cgroup"
 )
 
 var (
@@ -539,7 +540,8 @@ func TestStartCPU(t *testing.T) {
 			t.Fatalf("%s: boost does not end", c.entry)
 		}
 		if isolatedDriver() {
-			if v, _ := os.ReadFile(filepath.Join("/sys/fs/cgroup/tsbox", spec.Name, "cpu.max")); strings.TrimSpace(string(v)) != "50000 100000" {
+			cg := filepath.Join(cgroup.Root, cgroup.InstanceParent(filepath.Join(testState, driverName())), spec.Name)
+			if v, _ := os.ReadFile(filepath.Join(cg, "cpu.max")); strings.TrimSpace(string(v)) != "50000 100000" {
 				t.Errorf("cpu.max after the start: %q", v)
 			}
 		}
