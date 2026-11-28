@@ -697,7 +697,12 @@ func (b *Box) scriptExitedLocked(s *script, e proto.Exit) {
 	case e.Signal != "" || e.Code == -1 || e.Code == 137:
 		ex.Reason = ReasonKilled
 		if b.drv != nil {
-			if st, err := b.drv.Stats(context.Background()); err == nil && st.OOMKills > b.oomSeen {
+			// Still under b.mu (the exit decides now): bounded, so that a hanging Firecracker guest blocks the box
+			// for at most a second instead of the vsock timeout.
+			sctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			st, err := b.drv.Stats(sctx)
+			cancel()
+			if err == nil && st.OOMKills > b.oomSeen {
 				b.oomSeen = st.OOMKills
 				ex.Reason = ReasonOOM
 				b.e.emit(Event{At: time.Now(), Kind: EventOOM, Box: b.spec.Name, Script: s.spec.Name})
