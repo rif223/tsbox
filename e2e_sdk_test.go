@@ -184,3 +184,23 @@ func TestBuildCacheEngine(t *testing.T) {
 		t.Fatal("WithoutBuildCache: hit")
 	}
 }
+
+// The rate limit of an SDK method belongs to the script, not to the run: a restarted script does not get a
+// full burst again (before, --restart always doubled the allowed rate).
+func TestSDKRateLimitAcrossRestarts(t *testing.T) {
+	e, rec := newEngine(t)
+	use := SDKUse{Name: "http", Grants: map[string][]string{"host": {"127.0.0.1"}}}
+	spec := sdkBox(t, "sdk/ratespend.ts", use)
+	spec.Restart = RestartPolicy{Mode: RestartOnFailure, MaxFailures: 2, BackoffMin: 50 * time.Millisecond}
+	runToEnd(t, e, spec, 2*time.Minute)
+	var runs []int
+	for _, m := range rec.messages("main") {
+		var n int
+		if _, err := fmt.Sscanf(m, "RATE passed %d", &n); err == nil {
+			runs = append(runs, n)
+		}
+	}
+	if len(runs) != 2 || runs[0] < 20 || runs[1] > 5 {
+		t.Fatalf("calls past the rate limit per run: %v (want 20+, then only what refilled)", runs)
+	}
+}

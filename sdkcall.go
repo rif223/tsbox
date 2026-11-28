@@ -133,7 +133,6 @@ type scriptRun struct {
 	subs     map[string]bool // "sdk:event"
 	inflight map[string]int  // "sdk.method"
 	total    int
-	buckets  map[string]*bucket
 }
 
 type bucket struct {
@@ -159,7 +158,7 @@ func (b *bucket) take(rate float64, burst int) bool {
 func newRun(id int) *scriptRun {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &scriptRun{id: id, ctx: ctx, cancel: cancel, sessions: map[string]*session{}, subs: map[string]bool{},
-		inflight: map[string]int{}, buckets: map[string]*bucket{}}
+		inflight: map[string]int{}}
 }
 
 // endRunLocked ends all sessions of a run (Handler.Close in its own goroutine).
@@ -306,10 +305,15 @@ func (b *Box) callLocked(s *script, f *proto.Frame) {
 		return
 	}
 	key := a.m.Name + "." + f.M
-	bk := s.run.buckets[key]
+	// The buckets belong to the script, not to the run: a script that spends its burst and exits must not get a
+	// full burst again with every restart (--restart always restarts after one second).
+	if s.buckets == nil {
+		s.buckets = map[string]*bucket{}
+	}
+	bk := s.buckets[key]
 	if bk == nil {
 		bk = &bucket{}
-		s.run.buckets[key] = bk
+		s.buckets[key] = bk
 	}
 	if !bk.take(m.Rate, m.Burst) {
 		reply(sdk.RateLimited, fmt.Sprintf("rate limit of %s (%g/s)", key, m.Rate))

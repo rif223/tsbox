@@ -96,8 +96,9 @@ type script struct {
 	lastAt                    time.Time
 	cpu                       float64
 	heap                      int64
-	heapOOM                   bool       // V8 reported "heap out of memory" (stderr) in this run
-	run                       *scriptRun // SDK state of the current run
+	heapOOM                   bool               // V8 reported "heap out of memory" (stderr) in this run
+	run                       *scriptRun         // SDK state of the current run
+	buckets                   map[string]*bucket // rate limits per "sdk.method", across runs
 	runSeq                    int
 }
 
