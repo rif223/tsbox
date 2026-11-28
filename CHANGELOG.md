@@ -64,6 +64,15 @@ versions are the tags `v<version>` (see CONTRIBUTING.md, Releases).
 - kv: no fsync before replacing the file; a damaged file made the namespace unusable.
 - An external provider got two `close` frames for one session on some paths; a session whose open timed out
   stayed registered.
+- http: the SSRF check missed several special-purpose ranges (0.0.0.0/8, 198.18.0.0/15, 240.0.0.0/4, documentation
+  ranges, Teredo, local-use NAT64, …) and NAT64/6to4 addresses that embed a private IPv4 address
+  (`64:ff9b::7f00:1` = 127.0.0.1).
+- http: a response below `maxBody` that does not fit an SDK result as JSON (escaped body plus headers, at most
+  1020 KiB) now fails with a message that says so instead of "result larger than 1020Ki".
+- dev driver: one leaked file descriptor per box whose start failed while setting limits or `oom_score_adj`.
+- Messages of canceled SDK calls ("abgebrochen") and provider panics were German.
+- Docs: SECURITY.md called gvisor the default driver; `Box.Emit` said a full queue drops the event per script
+  (it is dropped for all recipients).
 - A CPU limit of NaN passed `Limits.Validate` (every comparison with NaN is false; reachable through the Go API,
   not through tsboxd, since JSON cannot carry NaN). With tenant quotas it also turned the CPU sum into NaN, so
   every later CPU quota check passed.
