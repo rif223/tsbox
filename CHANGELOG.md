@@ -5,6 +5,8 @@ versions are the tags `v<version>` (see CONTRIBUTING.md, Releases).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-28
+
 ### Added
 
 - **@tsbox/kv v2:** versions per key with compare-and-set (`set(key, value, { ifVersion })`,

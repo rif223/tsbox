@@ -21,7 +21,7 @@ Needs [Deno](https://deno.com) 2.9 (`deno` in `PATH` or `TSBOX_DENO`).
 
 ```bash
 # Linux amd64 (other systems: pick the matching archive; Windows: .zip)
-V=0.1.0
+V=0.4.0
 curl -fLO "https://github.com/rif223/tsbox/releases/download/v$V/tsbox_${V}_linux_amd64.tar.gz"
 curl -fLO "https://github.com/rif223/tsbox/releases/download/v$V/SHA256SUMS"
 sha256sum --check --ignore-missing SHA256SUMS
