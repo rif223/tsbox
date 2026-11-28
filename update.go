@@ -29,6 +29,13 @@ func (e *Engine) Update(ctx context.Context, spec BoxSpec, grace time.Duration) 
 		return nil, err
 	}
 	wasRunning := !old.terminal()
+	// The resources too, before the old box stops: otherwise Start below fails on the quota and the old
+	// box only comes back through the rollback (a restart). The box itself is not counted (same name).
+	if wasRunning {
+		if err := e.checkQuota(spec, true); err != nil {
+			return nil, err
+		}
+	}
 	oldSpec := old.spec // with the Env of the caller that created it
 	if wasRunning {
 		if err := old.Stop(ctx, grace); err != nil {

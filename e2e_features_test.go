@@ -203,3 +203,34 @@ func TestTenantQuotas(t *testing.T) {
 	}
 	_ = ob.Stop(context.Background(), time.Second)
 }
+
+// An update that would exceed the tenant's memory quota is refused before the old box is stopped.
+func TestUpdateQuota(t *testing.T) {
+	e, _ := newEngine(t, WithTenantQuotas("tenant", func(string) Quota { return Quota{Memory: 300 << 20} }))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	spec := one(t, "scripts/service.ts", func(s *BoxSpec) {
+		s.Labels = map[string]string{"tenant": "a"}
+		s.Limits.Memory = 200 << 20
+	})
+	b, err := e.Run(ctx, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if cur, ok := e.Box(spec.Name); ok {
+			_ = cur.Stop(context.Background(), time.Second)
+		}
+	}()
+	big := spec
+	big.Limits.Memory = 400 << 20
+	if _, err := e.Update(ctx, big, time.Second); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("update beyond the quota: %v", err)
+	}
+	if st := b.Status(); st.State != BoxRunning {
+		t.Fatalf("old box after a refused update: %s", st.State)
+	}
+	if cur, _ := e.Box(spec.Name); cur != b {
+		t.Fatal("the engine replaced the box although the update was refused")
+	}
+}
