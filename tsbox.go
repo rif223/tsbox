@@ -230,6 +230,9 @@ type ScriptStatus struct {
 	Started  time.Time   `json:"started,omitempty"`
 	LastExit *ExitStatus `json:"lastExit,omitempty"`
 	SHA256   string      `json:"sha256"`
+	// DroppedLogLines counts the log lines over the rate limit (20 lines/s, burst 100) since the box was
+	// created; each gap is also reported by a "log lines dropped" line in the log.
+	DroppedLogLines uint64 `json:"droppedLogLines,omitempty"`
 }
 
 // BoxStatus is the view of a box.

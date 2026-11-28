@@ -3,6 +3,7 @@ package tsbox
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -81,5 +82,23 @@ func TestLogsFollowAndRemove(t *testing.T) {
 	}
 	if _, ok := e.Box(spec2.Name); ok || b2.Status().State != BoxExited {
 		t.Fatalf("after Remove: %v", b2.Status().State)
+	}
+}
+
+// Lines over the log rate limit are counted and reported in the log instead of vanishing silently.
+func TestLogRateLimitReported(t *testing.T) {
+	e, rec := newEngine(t)
+	st := runToEnd(t, e, one(t, "scripts/logburst.ts", nil), time.Minute)
+	var reported uint64
+	for _, m := range rec.messages("main") {
+		var n uint64
+		if _, err := fmt.Sscanf(m, "tsbox: %d log lines dropped", &n); err == nil {
+			reported += n
+		}
+	}
+	// 1000 lines, burst 100: about 900 dropped (a few more pass if printing takes longer than 50 ms).
+	dropped := st.Scripts[0].DroppedLogLines
+	if dropped < 800 || dropped > 900 || reported != dropped {
+		t.Fatalf("DroppedLogLines %d, reported in the log %d", dropped, reported)
 	}
 }

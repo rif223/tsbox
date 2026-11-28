@@ -88,14 +88,17 @@ type script struct {
 	lastExit *ExitStatus
 	tokens   float64
 	tokensAt time.Time
-	stats    proto.ProcStats
-	lastCPU  proto.ProcStats
-	lastAt   time.Time
-	cpu      float64
-	heap     int64
-	heapOOM  bool       // V8 reported "heap out of memory" (stderr) in this run
-	run      *scriptRun // SDK state of the current run
-	runSeq   int
+	// Log lines over the rate limit: all of them (ScriptStatus.DroppedLogLines) and those not yet reported in a
+	// "log lines dropped" line.
+	logDropped, logUnreported uint64
+	stats                     proto.ProcStats
+	lastCPU                   proto.ProcStats
+	lastAt                    time.Time
+	cpu                       float64
+	heap                      int64
+	heapOOM                   bool       // V8 reported "heap out of memory" (stderr) in this run
+	run                       *scriptRun // SDK state of the current run
+	runSeq                    int
 }
 
 // Validate checks the specification as the engine does before creating the box (names, limits; zero
@@ -644,12 +647,30 @@ func (b *Box) logLocked(s *script, level, msg string) {
 	s.tokens = min(logBurst, s.tokens+now.Sub(s.tokensAt).Seconds()*logRate)
 	s.tokensAt = now
 	if s.tokens < 1 {
+		s.logDropped++
+		s.logUnreported++
 		return
 	}
 	s.tokens--
-	l := LogLine{Seq: b.e.nextSeq(), At: now, Box: b.spec.Name, Script: s.spec.Name, Level: level, Msg: trunc(msg, maxLogMsg)}
+	b.reportDroppedLocked(s, now)
+	b.emitLogLocked(s, now, level, msg)
+}
+
+func (b *Box) emitLogLocked(s *script, at time.Time, level, msg string) {
+	l := LogLine{Seq: b.e.nextSeq(), At: at, Box: b.spec.Name, Script: s.spec.Name, Level: level, Msg: trunc(msg, maxLogMsg)}
 	b.e.log(l)
 	b.publish(l)
+}
+
+// reportDroppedLocked writes one line about the lines the rate limit dropped since the last report (before
+// the next line that passes, and when the script ends), so that a lost stack trace does not go unnoticed.
+func (b *Box) reportDroppedLocked(s *script, at time.Time) {
+	if s.logUnreported == 0 {
+		return
+	}
+	b.emitLogLocked(s, at, "warn", fmt.Sprintf("tsbox: %d log lines dropped (limit %g lines/s, burst %g)",
+		s.logUnreported, logRate, logBurst))
+	s.logUnreported = 0
 }
 
 func trunc(s string, n int) string {
@@ -661,6 +682,7 @@ func trunc(s string, n int) string {
 
 // scriptExitedLocked evaluates the end of a script and schedules the restart if needed.
 func (b *Box) scriptExitedLocked(s *script, e proto.Exit) {
+	b.reportDroppedLocked(s, time.Now())
 	s.endRunLocked()
 	ex := &ExitStatus{At: time.Now(), Code: e.Code, Signal: e.Signal, Detail: e.Detail, Reason: ExitReason(e.Reason)}
 	switch {
@@ -846,6 +868,7 @@ func (b *Box) boxEnded(drv driver.Box, gen int) {
 		b.e.emit(Event{At: now, Kind: EventOOM, Box: b.spec.Name, Detail: err.Error()})
 	}
 	for _, s := range b.scripts {
+		b.reportDroppedLocked(s, now)
 		s.endRunLocked()
 		switch s.state {
 		case ScriptStarting, ScriptRunning, ScriptReady:
@@ -1001,7 +1024,8 @@ func (b *Box) Status() BoxStatus {
 	}
 	for _, name := range b.order {
 		s := b.scripts[name]
-		ss := ScriptStatus{Name: name, State: s.state, Restarts: s.restarts, Started: s.started, SHA256: s.artifact.SHA256}
+		ss := ScriptStatus{Name: name, State: s.state, Restarts: s.restarts, Started: s.started, SHA256: s.artifact.SHA256,
+			DroppedLogLines: s.logDropped}
 		if s.lastExit != nil {
 			e := *s.lastExit
 			ss.LastExit = &e

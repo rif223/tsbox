@@ -125,6 +125,8 @@ func (d *Daemon) writeMetrics(ctx context.Context, w io.Writer) {
 			m.val("tsbox_script_up", sup, "box", box, "script", sc.Name, "state", string(sc.State))
 			m.head("tsbox_script_restarts_total", "counter", "Restarts of the script since the box started.")
 			m.val("tsbox_script_restarts_total", float64(sc.Restarts), "box", box, "script", sc.Name)
+			m.head("tsbox_script_log_lines_dropped_total", "counter", "Log lines over the rate limit (20/s, burst 100).")
+			m.val("tsbox_script_log_lines_dropped_total", float64(sc.DroppedLogLines), "box", box, "script", sc.Name)
 		}
 		if up == 0 {
 			continue
