@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rif223/tsbox/internal/fsutil"
+	"github.com/rif223/tsbox/internal/driver"
 	"github.com/rif223/tsbox/internal/profile"
 )
 
@@ -35,8 +35,14 @@ type imageCache struct {
 // Running VMs are not affected: they keep their open file.
 const imageMaxAge = 7 * 24 * time.Hour
 
-// pruneImages removes unused images, at most once per hour. Called with images.mu held.
-func (d *Driver) pruneImages(dir, keep string) {
+// initSuffix names the file next to an image that records the hash of the tsbox binary it contains.
+const initSuffix = ".init"
+
+// pruneImages removes unused images, at most once per hour. Called with images.mu held. An image of another
+// tsbox binary (initHash differs, or no record: built before records existed) is never used again by this
+// binary: it goes at once instead of after imageMaxAge (about 470 MB per tsbox version). Other images go
+// after imageMaxAge without use (a removed profile). Running VMs keep their open file.
+func (d *Driver) pruneImages(dir, keep, initHash string) {
 	if time.Since(d.images.pruned) < time.Hour {
 		return
 	}
@@ -45,11 +51,15 @@ func (d *Driver) pruneImages(dir, keep string) {
 	for _, e := range ents {
 		p := filepath.Join(dir, e.Name())
 		info, err := e.Info()
-		if err != nil || p == keep {
+		if err != nil || p == keep || strings.HasSuffix(e.Name(), initSuffix) {
 			continue
 		}
-		if strings.HasSuffix(e.Name(), ".tmp") || time.Since(info.ModTime()) > imageMaxAge {
+		rec, rerr := os.ReadFile(p + initSuffix)
+		stale := strings.HasSuffix(e.Name(), ".tmp") || time.Since(info.ModTime()) > imageMaxAge ||
+			(strings.HasSuffix(e.Name(), ".ext4") && (rerr != nil || strings.TrimSpace(string(rec)) != initHash))
+		if stale {
 			_ = os.Remove(p)
+			_ = os.Remove(p + initSuffix)
 		}
 	}
 }
@@ -71,14 +81,14 @@ func (d *Driver) image(ctx context.Context, rootfs, initBin string) (string, err
 		ph = h
 		d.images.hashes[rootfs] = ph
 	}
-	ih, err := fsutil.FileSHA256(initBin)
+	ih, err := driver.FileHash(initBin) // cached: hashing the binary took 20–75 ms per start
 	if err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256([]byte(imageVersion + "\x00" + ph + "\x00" + ih))
 	dir := filepath.Join(d.cfg.StateDir, "images")
 	img := filepath.Join(dir, hex.EncodeToString(sum[:12])+".ext4")
-	defer d.pruneImages(dir, img)
+	defer d.pruneImages(dir, img, ih)
 	if _, err := os.Stat(img); err == nil {
 		now := time.Now()
 		_ = os.Chtimes(img, now, now) // last use, for pruneImages
@@ -90,6 +100,7 @@ func (d *Driver) image(ctx context.Context, rootfs, initBin string) (string, err
 	if err := buildImage(ctx, rootfs, initBin, img); err != nil {
 		return "", fmt.Errorf("firecracker: building the rootfs image: %w", err)
 	}
+	_ = os.WriteFile(img+initSuffix, []byte(ih), 0o600)
 	return img, nil
 }
 

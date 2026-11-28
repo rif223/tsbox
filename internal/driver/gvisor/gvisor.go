@@ -4,6 +4,7 @@
 package gvisor
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"debug/elf"
@@ -248,8 +249,18 @@ func (d *Driver) Start(ctx context.Context, spec driver.Spec) (driver.Box, error
 }
 
 // installInit stores a copy of the (static) tsbox binary content-addressed. Running boxes keep their
-// version even when tsbox is updated.
+// version even when tsbox is updated. The hash is cached (driver.FileHash): before, every start read and
+// hashed the whole binary.
 func (d *Driver) installInit(src string) (string, error) {
+	h, err := driver.FileHash(src)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(d.cfg.StateDir, "init", h[:16])
+	dst := filepath.Join(dir, "tsbox")
+	if _, err := os.Stat(dst); err == nil {
+		return dir, nil
+	}
 	if err := requireStatic(src); err != nil {
 		return "", err
 	}
@@ -257,12 +268,9 @@ func (d *Driver) installInit(src string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(b)
-	dir := filepath.Join(d.cfg.StateDir, "init", hex.EncodeToString(sum[:8]))
-	dst := filepath.Join(dir, "tsbox")
-	if _, err := os.Stat(dst); err == nil {
-		return dir, nil
-	}
+	sum := sha256.Sum256(b) // the content as read (in case the file changed after FileHash)
+	dir = filepath.Join(d.cfg.StateDir, "init", hex.EncodeToString(sum[:8]))
+	dst = filepath.Join(dir, "tsbox")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
@@ -270,7 +278,44 @@ func (d *Driver) installInit(src string) (string, error) {
 	if err := os.WriteFile(tmp, b, 0o555); err != nil {
 		return "", err
 	}
-	return dir, os.Rename(tmp, dst)
+	if err := os.Rename(tmp, dst); err != nil {
+		return "", err
+	}
+	d.pruneInits(dir)
+	return dir, nil
+}
+
+// pruneInits removes the copies of older tsbox binaries (12 MiB each, before kept for ever) once a new one is
+// installed, except those a running box still uses (its bundle refers to the directory).
+func (d *Driver) pruneInits(keep string) {
+	ents, err := os.ReadDir(filepath.Join(d.cfg.StateDir, "init"))
+	if err != nil {
+		return
+	}
+	var bundles [][]byte
+	cfgs, _ := filepath.Glob(filepath.Join(d.cfg.StateDir, "bundles", "*", "config.json"))
+	for _, c := range cfgs {
+		if b, err := os.ReadFile(c); err == nil {
+			bundles = append(bundles, b)
+		}
+	}
+	for _, e := range ents {
+		dir := filepath.Join(d.cfg.StateDir, "init", e.Name())
+		if !e.IsDir() || dir == keep {
+			continue
+		}
+		quoted, _ := json.Marshal(dir) // as it appears in a bundle's config.json
+		used := false
+		for _, b := range bundles {
+			if bytes.Contains(b, quoted[1:len(quoted)-1]) {
+				used = true
+				break
+			}
+		}
+		if !used {
+			_ = os.RemoveAll(dir)
+		}
+	}
 }
 
 // requireStatic: the binary runs in the box's rootfs and must not need host libraries.
