@@ -69,6 +69,7 @@ type Box struct {
 	droppedEvents uint64
 	checkOnly     bool // build only (Engine.Check), do not create a box directory
 	profileHash   string
+	startCancel   context.CancelFunc // ends a running Start (Stop while the box is starting)
 
 	subMu sync.Mutex
 	subs  map[*logSub]struct{} // readers with Follow
@@ -316,12 +317,34 @@ func (b *Box) Start(ctx context.Context) error {
 		s.state, s.failures = ScriptPending, nil
 	}
 	gen := b.gen
+	ctx, cancelStart := context.WithCancel(ctx) // Stop cancels it while the box is still starting
+	b.startCancel = cancelStart
 	b.mu.Unlock()
+	defer func() {
+		b.mu.Lock()
+		if b.gen == gen {
+			b.startCancel = nil
+		}
+		b.mu.Unlock()
+		cancelStart()
+	}()
+	// failStart ends a failed start: BoxFailed with msg, or BoxExited if Stop came in between (then the
+	// error says so instead of err).
+	failStart := func(msg string, err error) error {
+		b.mu.Lock()
+		stopped := b.stopping
+		b.mu.Unlock()
+		if stopped {
+			b.fail(BoxExited, "")
+			return fmt.Errorf("box %q: stopped while starting", b.spec.Name)
+		}
+		b.fail(BoxFailed, msg)
+		return err
+	}
 
 	rootfs, phash, err := b.e.profileRootFS(b.driver, b.spec.Profile)
 	if err != nil {
-		b.fail(BoxFailed, err.Error())
-		return err
+		return failStart(err.Error(), err)
 	}
 	// Opt-in: the box starts with StartCPU cores; endStartBoost sets CPU afterwards.
 	cpu, boost := b.spec.Limits.CPU, b.spec.Limits.StartCPU > b.spec.Limits.CPU
@@ -338,8 +361,7 @@ func (b *Box) Start(ctx context.Context) error {
 		Stderr: &initLog{b: b}, RootFS: rootfs, OOMScoreAdj: b.e.cfg.oomAdj, BaselineRSS: b.e.baselineRSS(baseKey),
 	})
 	if err != nil {
-		b.fail(BoxFailed, err.Error())
-		return err
+		return failStart(err.Error(), err)
 	}
 	b.mu.Lock()
 	b.drv = drv
@@ -360,10 +382,14 @@ func (b *Box) Start(ctx context.Context) error {
 	}
 	if err != nil {
 		_ = drv.Kill()
-		b.fail(BoxFailed, "Start: "+err.Error())
-		return fmt.Errorf("box %q: %w", b.spec.Name, err)
+		return failStart("Start: "+err.Error(), fmt.Errorf("box %q: %w", b.spec.Name, err))
 	}
 	b.mu.Lock()
+	if b.stopping || b.gen != gen { // Stop came while init started: end the box instead of running it
+		b.mu.Unlock()
+		_ = drv.Kill() // boxEnded then sets BoxExited and closes finished
+		return fmt.Errorf("box %q: stopped while starting", b.spec.Name)
+	}
 	b.state, b.started = BoxRunning, time.Now()
 	for _, name := range b.order {
 		b.startScriptLocked(b.scripts[name])
@@ -830,6 +856,7 @@ func (b *Box) Stop(ctx context.Context, grace time.Duration) error {
 		b.mu.Unlock()
 		return nil
 	}
+	starting, cancelStart := b.state == BoxStarting, b.startCancel
 	b.stopping = true
 	b.state = BoxStopping
 	for _, s := range b.scripts {
@@ -840,6 +867,17 @@ func (b *Box) Stop(ctx context.Context, grace time.Duration) error {
 	}
 	drv, finished := b.drv, b.finished
 	b.mu.Unlock()
+	if starting && cancelStart != nil {
+		// Start is still waiting for the driver or for init's hello: let it end the box. Before this, Stop found no
+		// driver to kill, gave up after 20 s and Start set the box running afterwards.
+		cancelStart()
+		select {
+		case <-finished:
+			return nil
+		case <-time.After(15 * time.Second):
+			return fmt.Errorf("box %q does not end", b.spec.Name)
+		}
+	}
 	deadline := time.NewTimer(grace)
 	defer deadline.Stop()
 	t := time.NewTicker(50 * time.Millisecond)
