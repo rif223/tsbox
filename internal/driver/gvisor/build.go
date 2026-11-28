@@ -92,6 +92,9 @@ func (d *Driver) RunBuild(ctx context.Context, inv build.Invocation) ([]byte, []
 	if err := os.WriteFile(filepath.Join(bundle, "config.json"), b, 0o600); err != nil {
 		return nil, nil, err
 	}
+	if err := cgroup.EnsureParent(d.cfg.CgroupParent); err != nil {
+		return nil, nil, fmt.Errorf("gvisor build: %w", err)
+	}
 	ctx, cancel := context.WithTimeout(ctx, buildTimeout)
 	defer cancel()
 	cmd := exec.Command(d.cfg.Runsc, append(d.globalFlags(), "run", "--bundle", bundle, id)...)

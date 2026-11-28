@@ -90,3 +90,10 @@ func TestSetCPU(t *testing.T) {
 		t.Fatalf("cpu.max = %q", b)
 	}
 }
+
+func TestInstanceParent(t *testing.T) {
+	a, b := InstanceParent("/var/lib/tsbox"), InstanceParent("/tmp/other")
+	if a == b || a != InstanceParent("/var/lib/tsbox/") || len(a) != len("/tsbox/")+8 || a[:7] != "/tsbox/" {
+		t.Fatalf("%q %q", a, b)
+	}
+}

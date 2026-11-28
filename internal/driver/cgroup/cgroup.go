@@ -4,6 +4,8 @@ package cgroup
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +17,39 @@ import (
 
 // Root is the root of the cgroup v2 hierarchy.
 const Root = "/sys/fs/cgroup"
+
+// InstanceParent is the default cgroup parent of a driver (relative to Root): /tsbox/<8 hex digits of the
+// state directory>. The box cgroups below it carry only the box name, so two engines or daemons with
+// different state directories on one host (system daemon, tests, embedding applications) must not share
+// a parent: boxes of the same name would share one cgroup, its limits and its cgroup.kill.
+func InstanceParent(stateDir string) string {
+	if abs, err := filepath.Abs(stateDir); err == nil {
+		stateDir = abs
+	}
+	sum := sha256.Sum256([]byte(filepath.Clean(stateDir)))
+	return "/tsbox/" + hex.EncodeToString(sum[:4])
+}
+
+// EnsureParent creates the parent (relative to Root, e.g. /tsbox/1a2b3c4d) and enables the cpu, memory and
+// pids controllers for the children of Root and of every directory down to it.
+func EnsureParent(parent string) error {
+	dir := Root
+	enable := func(d string) {
+		_ = os.WriteFile(filepath.Join(d, "cgroup.subtree_control"), []byte("+cpu +memory +pids"), 0)
+	}
+	enable(dir)
+	for _, part := range strings.Split(strings.Trim(filepath.ToSlash(parent), "/"), "/") {
+		if part == "" {
+			continue
+		}
+		dir = filepath.Join(dir, part)
+		if err := os.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {
+			return fmt.Errorf("cgroup: %w", err)
+		}
+		enable(dir)
+	}
+	return nil
+}
 
 // Stats are the raw values of a cgroup.
 type Stats struct {

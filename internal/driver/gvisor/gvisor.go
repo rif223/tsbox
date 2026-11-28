@@ -37,7 +37,7 @@ type Config struct {
 	Runsc        string // default: runsc from PATH (sidecars in gvisor-bin/ next to it)
 	RootFS       string // read-only rootfs with /usr/local/bin/deno
 	StateDir     string // bundles, runsc state, copies of tsbox-init
-	CgroupParent string // default "/tsbox"
+	CgroupParent string // default /tsbox/<hash of StateDir> (cgroup.InstanceParent)
 	// Platform is "systrap" or "kvm". Empty: systrap, or kvm if systrap cannot start a sandbox on this host
 	// (found: WSL2 kernel 6.6) and kvm can.
 	Platform string
@@ -62,11 +62,11 @@ func New(cfg Config) (*Driver, error) {
 	if err := driver.CheckArch("gvisor"); err != nil {
 		return nil, err
 	}
-	if cfg.CgroupParent == "" {
-		cfg.CgroupParent = "/tsbox"
-	}
 	if cfg.RootFS == "" || cfg.StateDir == "" {
 		return nil, errors.New("gvisor: RootFS and StateDir are required")
+	}
+	if cfg.CgroupParent == "" {
+		cfg.CgroupParent = cgroup.InstanceParent(cfg.StateDir)
 	}
 	p, err := exec.LookPath(cfg.Runsc)
 	if err != nil {
@@ -209,6 +209,9 @@ func (d *Driver) Start(ctx context.Context, spec driver.Spec) (driver.Box, error
 	}
 	// Remove leftovers of an earlier run with the same ID (e.g. after tsbox crashed).
 	_ = exec.Command(d.cfg.Runsc, append(d.globalFlags(), "delete", "-force", spec.ID)...).Run()
+	if err := cgroup.EnsureParent(d.cfg.CgroupParent); err != nil {
+		return nil, fmt.Errorf("gvisor: %w", err)
+	}
 
 	bx := &box{d: d, id: spec.ID, cgDir: filepath.Join(cgroup.Root, d.cfg.CgroupParent, spec.ID)}
 	bx.oomBase = cgroup.OOMKills(filepath.Dir(bx.cgDir))

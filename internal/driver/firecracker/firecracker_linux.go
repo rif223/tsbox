@@ -55,7 +55,7 @@ type Config struct {
 	Kernel       string // guest kernel (uncompressed vmlinux with virtio, vsock, ext4, cgroup v2)
 	RootFS       string // rootfs directory of the profile "default" (with /usr/local/bin/deno)
 	StateDir     string // images, VM directories, build cache
-	CgroupParent string // default "/tsbox"
+	CgroupParent string // default /tsbox/<hash of StateDir> (cgroup.InstanceParent)
 	Jailer       string // opt-in: the jailer binary; "" = without jailer (jail_linux.go)
 	JailUID      int    // first UID/GID of the jailed VMMs (default 63000, 1000 slots)
 }
@@ -73,11 +73,11 @@ func New(cfg Config) (*Driver, error) {
 	if cfg.Firecracker == "" {
 		cfg.Firecracker = "firecracker"
 	}
-	if cfg.CgroupParent == "" {
-		cfg.CgroupParent = "/tsbox"
-	}
 	if cfg.RootFS == "" || cfg.StateDir == "" {
 		return nil, errors.New("firecracker: RootFS and StateDir are required")
+	}
+	if cfg.CgroupParent == "" {
+		cfg.CgroupParent = cgroup.InstanceParent(cfg.StateDir)
 	}
 	if err := driver.CheckArch("firecracker"); err != nil {
 		return nil, err
@@ -274,14 +274,8 @@ func (d *Driver) launch(ctx context.Context, s vmSpec) (*vm, error) {
 }
 
 func (v *vm) makeCgroup(memory int64, cpu float64) (*os.File, error) {
-	parent := filepath.Dir(v.cgDir)
-	for _, dir := range []string{cgroup.Root, parent} {
-		if dir != cgroup.Root {
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				return nil, err
-			}
-		}
-		_ = os.WriteFile(filepath.Join(dir, "cgroup.subtree_control"), []byte("+cpu +memory +pids"), 0)
+	if err := cgroup.EnsureParent(v.d.cfg.CgroupParent); err != nil {
+		return nil, err
 	}
 	_ = os.Remove(v.cgDir) // leftover of an earlier run
 	if err := os.Mkdir(v.cgDir, 0o755); err != nil {
