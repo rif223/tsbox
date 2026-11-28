@@ -3,7 +3,7 @@
  *
  * ```ts
  * import { inbox } from "@tsbox/inbox";
- * inbox.on((msg) => {                          // tsbox emit bot inbox:message '{"topic":"ping"}'
+ * inbox.on((msg) => {                          // tsbox emit bot ping
  *   if (msg.topic === "ping") inbox.send("pong", { at: Date.now() });
  * });
  * ```
