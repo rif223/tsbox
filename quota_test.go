@@ -10,7 +10,7 @@ func TestParseQuota(t *testing.T) {
 	if q, err := ParseQuota(""); err != nil || q != (Quota{}) {
 		t.Fatalf("empty: %+v %v", q, err)
 	}
-	for _, bad := range []string{"boxes", "ram=1Gi", "cpu=-1", "memory=lots"} {
+	for _, bad := range []string{"boxes", "ram=1Gi", "cpu=-1", "memory=lots", "cpu=NaN", "cpu=inf", "cpu=-Inf"} {
 		if _, err := ParseQuota(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}

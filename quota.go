@@ -3,6 +3,7 @@ package tsbox
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -60,6 +61,9 @@ func ParseQuota(s string) (Quota, error) {
 	}
 	if q.Boxes < 0 || q.Memory < 0 || q.CPU < 0 || q.PIDs < 0 {
 		return q, errors.New("quota: negative value")
+	}
+	if math.IsNaN(q.CPU) || math.IsInf(q.CPU, 0) { // NaN would mean "unlimited": every comparison fails
+		return q, errors.New("quota cpu: not a finite number")
 	}
 	return q, nil
 }
