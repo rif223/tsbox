@@ -355,7 +355,7 @@ func TestIntegrity(t *testing.T) {
 	}
 	p := b.scripts["main"].artifact.Path
 	_ = os.Chmod(p, 0o644)
-	if err := os.WriteFile(p, []byte("console.log('manipuliert')"), 0o644); err != nil {
+	if err := os.WriteFile(p, []byte("console.log('tampered')"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := b.Start(context.Background()); err != nil {
@@ -370,7 +370,7 @@ func TestIntegrity(t *testing.T) {
 	if ex := lastExit(t, st); ex.Reason != ReasonIntegrity || st.Scripts[0].State != ScriptBroken {
 		t.Fatalf("%+v", st.Scripts[0])
 	}
-	if !rec.eventually(EventIntegrityFailed) || slices.Contains(rec.messages(""), "manipuliert") {
+	if !rec.eventually(EventIntegrityFailed) || slices.Contains(rec.messages(""), "tampered") {
 		t.Fatal("tampered artifact ran or no event")
 	}
 }

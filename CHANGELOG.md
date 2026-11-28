@@ -87,7 +87,7 @@ versions are the tags `v<version>` (see CONTRIBUTING.md, Releases).
 - http: a response below `maxBody` that does not fit an SDK result as JSON (escaped body plus headers, at most
   1020 KiB) now fails with a message that says so instead of "result larger than 1020Ki".
 - dev driver: one leaked file descriptor per box whose start failed while setting limits or `oom_score_adj`.
-- Messages of canceled SDK calls ("abgebrochen") and provider panics were German.
+- The messages of canceled SDK calls and of provider panics were not in English.
 - Docs: SECURITY.md called gvisor the default driver; `Box.Emit` said a full queue drops the event per script
   (it is dropped for all recipients).
 - A CPU limit of NaN passed `Limits.Validate` (every comparison with NaN is false; reachable through the Go API,

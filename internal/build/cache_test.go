@@ -41,7 +41,7 @@ func TestBuildCache(t *testing.T) {
 		t.Fatal("different toolchain: hit")
 	}
 	if a := build(Options{Deno: d, StoreDir: o.StoreDir, Toolchain: "t1", Imports: o.Imports, NoCache: true}, src); a.Cached {
-		t.Fatal("NoCache: Treffer")
+		t.Fatal("NoCache: hit")
 	}
 	write(t, filepath.Join(dir, "sdk"), "mod.ts", `export const v = (): number => 2;`)
 	if a := build(o, src); a.Cached || a.SHA256 == a1.SHA256 {
@@ -63,7 +63,7 @@ func TestBuildCache(t *testing.T) {
 	}
 	// Tampered artifact: rebuild.
 	os.Chmod(a3.Path, 0o644)
-	os.WriteFile(a3.Path, []byte("manipuliert"), 0o644)
+	os.WriteFile(a3.Path, []byte("tampered"), 0o644)
 	if a := build(o, src); a.Cached {
 		t.Fatal("tampered artifact as a hit")
 	}
