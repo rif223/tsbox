@@ -261,6 +261,24 @@ func Store(dir string, b []byte) (Artifact, error) {
 	return Artifact{Path: dst, SHA256: h, Size: int64(len(b))}, nil
 }
 
+// outsideURL finds modules in deno's diagnostics. In the build sandbox the script's directory is /src, so an
+// import outside of it (../x) resolves to a path such as file:///x, which the sandbox does not have.
+var outsideURL = regexp.MustCompile(`file:///([^"'\s]*)`)
+
+func outsideSandbox(diag string) bool {
+	if !strings.Contains(diag, "not found") && !strings.Contains(diag, "Cannot find module") {
+		return false
+	}
+	for _, m := range outsideURL.FindAllStringSubmatch(diag, -1) {
+		switch strings.SplitN(m[1], "/", 2)[0] {
+		case "src", "sdk", "core", "work":
+		default:
+			return true
+		}
+	}
+	return false
+}
+
 func hint(diag string) string {
 	switch {
 	case bareHint.MatchString(diag) && !strings.Contains(bareHint.FindString(diag), ":"):
@@ -273,6 +291,9 @@ func hint(diag string) string {
 			return fmt.Sprintf("Module %q is not activated. Start with --sdk %s.", name, strings.TrimPrefix(name, "@tsbox/"))
 		}
 		return fmt.Sprintf("Module %q is unknown. Allowed are relative imports, @tsbox/core and activated SDKs.", name)
+	case outsideSandbox(diag):
+		return "The build sandbox sees only the script's directory, @tsbox/core and the activated SDKs: " +
+			"imports outside the script's directory are not possible with gvisor and firecracker."
 	case remoteHint.MatchString(diag):
 		return "Remote, jsr: and npm: imports are not allowed in tsbox. Use local files or an SDK (--sdk)."
 	case strings.Contains(diag, "TS"):

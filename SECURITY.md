@@ -35,8 +35,13 @@ start, and every box and script has hard limits (memory, CPU, processes, threads
 3. **External SDK providers are host code** (like Docker plugins). Install only SDKs whose code you trust.
 4. **Scripts in the same box are one trust domain.** Under gVisor they can read each other's `cmdline` and
    `status`. Put code that must not see each other into separate boxes.
-5. **Side channels** (timing, Spectre) between boxes on the same host are not addressed.
-6. **No independent audit** has been done yet.
+5. **The build reads the files a script imports.** A JSON or code import is inlined into the artifact, and the
+   script can send it out through an SDK it was granted. With `gvisor` and `firecracker` the build sees only the
+   script's directory (plus `@tsbox/core` and the activated SDKs), so put a foreign script into a directory of
+   its own, without secrets next to it. With `dev` (trusted code only) the build may import any local file, e.g.
+   shared code from `../shared`.
+6. **Side channels** (timing, Spectre) between boxes on the same host are not addressed.
+7. **No independent audit** has been done yet.
 
 ## Supported versions
 

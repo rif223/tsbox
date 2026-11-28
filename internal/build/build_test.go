@@ -107,3 +107,19 @@ func TestBundleIgnoresNestedConfig(t *testing.T) {
 		t.Fatalf("import from a foreign deno.json built: %v", err)
 	}
 }
+
+// In the build sandbox an import outside the script's directory gets its own hint instead of "Type error".
+func TestHintOutsideSandbox(t *testing.T) {
+	for _, d := range []string{
+		`error: Module not found "file:///scripts/lib_outside.ts".` + "\n    at file:///src/outside.ts:2:23",
+		"TS2307 [ERROR]: Cannot find module 'file:///secrets.json'.\n    at file:///src/evil.ts:1:15",
+	} {
+		if h := hint(d); !strings.Contains(h, "outside the script's directory") {
+			t.Errorf("%q: hint %q", d, h)
+		}
+	}
+	// A missing file inside the script's directory is not an outside import.
+	if h := hint(`error: Module not found "file:///src/missing.ts".`); strings.Contains(h, "outside") {
+		t.Errorf("missing file inside: %q", h)
+	}
+}
