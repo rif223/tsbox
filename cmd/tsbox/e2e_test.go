@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -575,7 +576,7 @@ func TestInterrupt(t *testing.T) {
 	}
 	c := newCLI(t)
 	cmd := c.cmd("run", "--name", "interrupted", "testdata/scripts/service.ts")
-	var out bytes.Buffer
+	var out lockedBuffer // os/exec writes from its own goroutine while the loop reads
 	cmd.Stdout = &out
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -722,4 +723,22 @@ func TestDaemonStart(t *testing.T) {
 	c.ok("run", "-d", "--name", "svc", "testdata/scripts/service.ts")
 	c.waitState("svc", tsbox.BoxRunning)
 	c.ok("daemon", "stop", "-f")
+}
+
+// lockedBuffer is a bytes.Buffer that a child process may write while the test reads it.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
