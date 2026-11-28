@@ -3,6 +3,7 @@ package tsbox
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -158,6 +159,15 @@ func normalize(s BoxSpec) (BoxSpec, error) {
 		if sc.Entry == "" && len(sc.debugExec) == 0 {
 			return s, fmt.Errorf("script %q: entry missing", sc.Name)
 		}
+		if len(sc.Params) > 0 {
+			if !json.Valid(sc.Params) {
+				return s, fmt.Errorf("script %q: params are not valid JSON", sc.Name)
+			}
+			if limit := maxParams(s.Driver); len(sc.Params) > limit {
+				return s, fmt.Errorf("script %q: params are %d bytes, at most %s are allowed (they reach the script on its command line)",
+					sc.Name, len(sc.Params), driver.FormatBytes(int64(limit)))
+			}
+		}
 		l := &sc.Limits
 		if l.Heap == 0 {
 			l.Heap = 64 << 20
@@ -183,6 +193,23 @@ func normalize(s BoxSpec) (BoxSpec, error) {
 		}
 	}
 	return s, nil
+}
+
+// MaxParams is the largest ScriptSpec.Params (JSON). Params reach the script as an argument of its command
+// line: Linux allows 128 KiB per argument. Windows allows 32767 characters for the whole command line, and
+// quoting can make a JSON string up to four times as long, so the dev driver on Windows allows
+// MaxParamsWindows. Before, larger params failed with spawn_failed, and above 1 MiB the script waited in
+// "starting" for ever.
+const (
+	MaxParams        = 64 << 10
+	MaxParamsWindows = 8 << 10
+)
+
+func maxParams(drv string) int {
+	if drv == "dev" && runtime.GOOS == "windows" {
+		return MaxParamsWindows
+	}
+	return MaxParams
 }
 
 func defaultPolicy(p RestartPolicy) RestartPolicy {
@@ -439,6 +466,9 @@ func (b *Box) sendLocked(f *proto.Frame) {
 	}
 	buf, err := proto.Encode(f)
 	if err != nil {
+		// Only frames of the host's own making get here (start, stop, SDK results are checked before); losing
+		// one silently left a script in "starting" for ever.
+		b.e.cfg.logger.Error("frame to init cannot be encoded", "box", b.spec.Name, "type", f.T, "script", f.SID, "err", err)
 		return
 	}
 	select {

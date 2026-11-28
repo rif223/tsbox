@@ -2,6 +2,7 @@ package tsbox
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -70,4 +71,29 @@ func TestWaitBeforeStart(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("Wait before Start: %v (box %s)", err, b.Status().State)
 	}
+}
+
+// Params are checked when the box is created (valid JSON, at most maxParams); params of the largest allowed
+// size start the script even in the worst case for the command line (a string of quotes).
+func TestParamsLimits(t *testing.T) {
+	spec := func(p string) BoxSpec {
+		return one(t, "scripts/version.ts", func(s *BoxSpec) { s.Scripts[0].Params = json.RawMessage(p) })
+	}
+	if err := spec(`{"a":`).Validate(); err == nil || !strings.Contains(err.Error(), "valid JSON") {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	limit := maxParams(driverName())
+	worst := func(n int) string { return `"` + strings.Repeat(`\"`, (n-2)/2) + `"` } // n bytes of JSON
+	if err := spec(worst(limit + 2)).Validate(); err == nil || !strings.Contains(err.Error(), "at most") {
+		t.Fatalf("params above the limit: %v", err)
+	}
+	e, _ := newEngine(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	b, err := e.Run(ctx, spec(worst(limit)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Stop(context.Background(), time.Second)
+	waitFor(t, "script ready", func() bool { return b.Status().Scripts[0].State == ScriptReady })
 }

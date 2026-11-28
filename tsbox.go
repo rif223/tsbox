@@ -87,9 +87,9 @@ type RestartPolicy struct {
 
 // ScriptSpec describes a script of a box.
 type ScriptSpec struct {
-	Name    string          `json:"name"`  // [a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}
-	Entry   string          `json:"entry"` // path to the .ts file
-	Params  json.RawMessage `json:"params,omitempty"`
+	Name    string          `json:"name"`             // [a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}
+	Entry   string          `json:"entry"`            // path to the .ts file
+	Params  json.RawMessage `json:"params,omitempty"` // JSON, at most MaxParams (MaxParamsWindows with dev on Windows)
 	Limits  ScriptLimits    `json:"limits"`
 	Restart *RestartPolicy  `json:"restart,omitempty"` // nil = the box's policy
 
