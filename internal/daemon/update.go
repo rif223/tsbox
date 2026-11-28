@@ -90,6 +90,9 @@ func (d *Daemon) update(ctx context.Context, r *record, spec tsbox.BoxSpec, env 
 		nb, err = d.e.Update(ctx, full, grace)
 	}
 	if err != nil {
+		if b != nil {
+			d.afterFailedUpdate(r, b)
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -120,6 +123,38 @@ func (d *Daemon) update(ctx context.Context, r *record, spec tsbox.BoxSpec, env 
 	}
 	d.onEvent(tsbox.Event{At: time.Now(), Kind: client.EventBoxUpdated, Box: r.name})
 	return nil
+}
+
+// afterFailedUpdate brings the record in line with the engine after a failed Engine.Update. If the old box
+// was stopped, the engine either runs a rollback box (a new *tsbox.Box with the old specification) or knows
+// no box of this name any more; the watcher of the old box ignored its end (updating). Without this, the
+// record kept pointing at the stopped old box: ps showed it stopped while the rollback box ran unwatched,
+// and stop/rm did not reach it.
+func (d *Daemon) afterFailedUpdate(r *record, old *tsbox.Box) {
+	cur, ok := d.e.Box(r.name)
+	r.mu.Lock()
+	r.updating = false // the watcher started below must record the end of the rollback box
+	switch {
+	case ok && cur != old: // rolled back
+		r.box = cur
+	case !ok: // neither the new nor the old specification runs; start creates the box anew
+		r.box = nil
+	case !terminal(old.Status().State): // the old box was not touched (build, check or quota error)
+		r.mu.Unlock()
+		return
+	}
+	st := old.Status()
+	if cur != nil && ok {
+		st = cur.Status()
+	}
+	r.last = &st
+	d.save(r)
+	running := r.box != nil && !terminal(st.State)
+	r.mu.Unlock()
+	if running {
+		d.wg.Add(1)
+		go d.watch(r, cur)
+	}
 }
 
 func stripEnv(s tsbox.BoxSpec) tsbox.BoxSpec {
