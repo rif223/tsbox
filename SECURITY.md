@@ -14,11 +14,12 @@ soon as possible; fixes are released together with a security advisory.
 
 | Driver | Boundary | Use for |
 |---|---|---|
-| `gvisor` (Linux, default when available) | gVisor's user-space kernel (sentry) with its seccomp filter; no network, read-only rootfs, no host sockets, own UID per script | untrusted code |
-| `firecracker` (Linux with KVM, opt-in) | one microVM per box (hardware virtualization); no network device, read-only rootfs, own UID per script, `hidepid=2`; optional jailer (chroot, own UID per VMM) | untrusted code, strong separation between boxes |
-| `dev` (Windows, macOS, Linux without gVisor) | **none** – only Deno's permissions | your own, trusted code only |
+| `gvisor` (Linux) | gVisor's user-space kernel (sentry) with its seccomp filter; no network, read-only rootfs, no host sockets, own UID per script | untrusted code |
+| `firecracker` (Linux with KVM) | one microVM per box (hardware virtualization); no network device, read-only rootfs, own UID per script, `hidepid=2`; optional jailer (chroot, own UID per VMM) | untrusted code, strong separation between boxes |
+| `dev` (Windows, macOS, Linux) | **none** – only Deno's permissions | your own, trusted code only |
 
-On top of every driver: Deno runs without `--allow-*`, scripts reach the outside only through SDKs with explicit
+There is no default driver: every box names its own (`tsbox run --driver`, `BoxSpec.Driver`), so a box never
+falls back to `dev` silently. On top of every driver: Deno runs without `--allow-*`, scripts reach the outside only through SDKs with explicit
 grants (`--grant`), secrets exist only on the host (`file:`/`env:`), artifacts are checked by hash before every
 start, and every box and script has hard limits (memory, CPU, processes, threads, heap, run time, watchdog).
 `TSBOX_REQUIRE_ISOLATION=1` makes tsbox refuse the dev driver. The design and the invariants are described in
