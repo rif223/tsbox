@@ -215,13 +215,74 @@ func Allowed(patterns []string, u *url.URL) bool {
 	return false
 }
 
+// blockedPrefixes are the special-purpose ranges (IANA registries) that are not globally reachable unicast,
+// besides what netip classifies (loopback, private, link-local, multicast, unspecified).
+var blockedPrefixes = func() []netip.Prefix {
+	var out []netip.Prefix
+	for _, p := range []string{
+		"0.0.0.0/8",       // "this network"
+		"100.64.0.0/10",   // CGNAT
+		"169.254.0.0/16",  // link-local, cloud metadata
+		"192.0.0.0/24",    // IETF protocol assignments
+		"192.0.2.0/24",    // documentation
+		"192.88.99.0/24",  // 6to4 relay anycast
+		"198.18.0.0/15",   // benchmarking
+		"198.51.100.0/24", // documentation
+		"203.0.113.0/24",  // documentation
+		"240.0.0.0/4",     // reserved, includes 255.255.255.255
+		"::/96",           // IPv4-compatible (deprecated); the embedded IPv4 is checked as well
+		"64:ff9b:1::/48",  // local-use NAT64: maps to addresses of the local network
+		"100::/64",        // discard
+		"2001::/32",       // Teredo: tunnels to an address that is not visible here
+		"2001:2::/48",     // benchmarking
+		"2001:10::/28",    // ORCHID
+		"2001:20::/28",    // ORCHIDv2
+		"2001:db8::/32",   // documentation
+		"fc00::/7",        // unique local
+		"fec0::/10",       // site-local (deprecated)
+	} {
+		out = append(out, netip.MustParsePrefix(p))
+	}
+	return out
+}()
+
+var (
+	nat64     = netip.MustParsePrefix("64:ff9b::/96")
+	sixToFour = netip.MustParsePrefix("2002::/16")
+)
+
+// blocked reports whether a may not be connected to: everything but globally reachable unicast. IPv6
+// addresses that carry an IPv4 address (NAT64, 6to4, IPv4-compatible) are blocked if that IPv4 address is.
 func blocked(a netip.Addr) bool {
 	a = a.Unmap()
-	return a.IsLoopback() || a.IsPrivate() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() ||
-		a.IsInterfaceLocalMulticast() || a.IsMulticast() || a.IsUnspecified() ||
-		netip.MustParsePrefix("100.64.0.0/10").Contains(a) || // CGNAT
-		netip.MustParsePrefix("169.254.0.0/16").Contains(a) || // cloud metadata
-		netip.MustParsePrefix("fc00::/7").Contains(a)
+	if a.IsLoopback() || a.IsPrivate() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() ||
+		a.IsInterfaceLocalMulticast() || a.IsMulticast() || a.IsUnspecified() {
+		return true
+	}
+	for _, p := range blockedPrefixes {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	if v4, ok := embeddedIPv4(a); ok {
+		return blocked(v4)
+	}
+	return false
+}
+
+// embeddedIPv4 returns the IPv4 address that NAT64 (64:ff9b::/96) or 6to4 (2002::/16) addresses carry.
+func embeddedIPv4(a netip.Addr) (netip.Addr, bool) {
+	if !a.Is6() {
+		return netip.Addr{}, false
+	}
+	b := a.As16()
+	switch {
+	case nat64.Contains(a):
+		return netip.AddrFrom4([4]byte(b[12:16])), true
+	case sixToFour.Contains(a):
+		return netip.AddrFrom4([4]byte(b[2:6])), true
+	}
+	return netip.Addr{}, false
 }
 
 func forbiddenHeader(k string) bool {
