@@ -5,7 +5,11 @@
   "description": "HTTP fetch with host allowlist, size and time limit",
   "provider": { "builtin": "http" },
   "config": {
-    "maxBody": { "type": "bytes", "default": "1Mi", "description": "largest response" },
+    "maxBody": {
+      "type": "bytes",
+      "default": "1Mi",
+      "description": "largest response body; the result (body JSON-escaped, headers) must also fit 1020Ki"
+    },
     "timeout": { "type": "duration", "default": "10s", "description": "time limit per request" },
     "userAgent": { "type": "string", "default": "tsbox-http/0.1" },
     "allowHTTP": { "type": "bool", "default": "false", "description": "also allow unencrypted http://" },

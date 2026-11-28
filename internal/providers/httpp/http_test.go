@@ -56,6 +56,8 @@ func TestFetch(t *testing.T) {
 		switch r.URL.Path {
 		case "/big":
 			w.Write([]byte(strings.Repeat("x", 4096)))
+		case "/quotes": // 700 KB below maxBody, but twice that as a JSON string
+			w.Write([]byte(strings.Repeat(`"`, 700_000)))
 		case "/away":
 			http.Redirect(w, r, "http://not-granted.example/", http.StatusFound)
 		case "/self":
@@ -98,6 +100,10 @@ func TestFetch(t *testing.T) {
 		if _, err := fetch(c.h, c.url, nil); code(err) != c.want {
 			t.Errorf("%s: %s, expected %s", c.name, code(err), c.want)
 		}
+	}
+	big := open(t, []string{hostport}, sdk.Config{"allowHTTP": "true", "allowPrivate": "true", "maxBody": "1Mi"})
+	if _, err := fetch(big, srv.URL+"/quotes", nil); code(err) != sdk.TooLarge || !strings.Contains(err.Error(), "JSON-escaped") {
+		t.Errorf("body that does not fit a result as JSON: %v", err)
 	}
 }
 

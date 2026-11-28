@@ -6,7 +6,9 @@
  * const r = await fetch("https://api.github.com/repos/denoland/deno");
  * console.log(r.status, r.json<{ stargazers_count: number }>().stargazers_count);
  * ```
- * https only (unless the operator allows http), no private addresses, response ≤ 1 MiB.
+ * https only (unless the operator allows http), no private addresses, response body ≤ maxBody (default 1 MiB). The
+ * whole result (body as a JSON string, so quotes and newlines count twice, plus headers) must fit 1020 KiB;
+ * otherwise fetch fails with too_large.
  * @module
  */
 import { call } from "@tsbox/core";

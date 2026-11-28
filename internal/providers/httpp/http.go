@@ -13,6 +13,7 @@ package httpp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -24,6 +25,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/rif223/tsbox/manifest"
 	"github.com/rif223/tsbox/sdk"
 )
 
@@ -181,7 +183,15 @@ func (p Provider) Open(_ context.Context, s sdk.Session) (sdk.Handler, error) {
 				h[strings.ToLower(k)] = strings.Join(v, ", ")
 			}
 		}
-		return response{Status: resp.StatusCode, URL: resp.Request.URL.String(), Headers: h, Body: string(b)}, nil
+		out := response{Status: resp.StatusCode, URL: resp.Request.URL.String(), Headers: h, Body: string(b)}
+		// The result travels as one frame: the body JSON-escaped (a '"' or a newline takes two bytes) plus the
+		// headers must fit an SDK result. Without this check the engine refused it as "result larger than
+		// 1020Ki" although the body was below maxBody, and a larger maxBody could not help.
+		if enc, err := json.Marshal(out); err == nil && int64(len(enc)) > manifest.MaxResultBytes {
+			return nil, sdk.Errorf(sdk.TooLarge, "response of %d bytes is %d bytes as a result (JSON-escaped body and headers), "+
+				"more than an SDK result can carry (%s)", len(b), len(enc), manifest.FormatBytes(manifest.MaxResultBytes))
+		}
+		return out, nil
 	})
 	r.OnClose(func() error { client.CloseIdleConnections(); return nil })
 	return r, nil
