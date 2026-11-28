@@ -35,7 +35,7 @@ func (l Limits) Validate() error {
 	switch {
 	case l.MemoryBytes < 32<<20:
 		return fmt.Errorf("box memory %s is below the minimum of 32Mi", FormatBytes(l.MemoryBytes))
-	case l.CPUCores < MinCPU || l.CPUCores > 64:
+	case !(l.CPUCores >= MinCPU && l.CPUCores <= 64): // also NaN, which fails every comparison
 		// Below MinCPU, gVisor and Firecracker do not even start the box in time ("tsbox-init does not report in").
 		return fmt.Errorf("box CPU must be between %g and 64 cores (got %g)", MinCPU, l.CPUCores)
 	case l.PIDs < 8 || l.PIDs > 4096:
