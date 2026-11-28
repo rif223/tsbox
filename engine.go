@@ -568,6 +568,17 @@ func (e *Engine) Close(ctx context.Context) error {
 	}
 	e.ext = map[string]*extproc.Provider{}
 	e.extMu.Unlock()
+	e.drvMu.Lock()
+	drivers := make([]driver.Driver, 0, len(e.drivers))
+	for _, d := range e.drivers {
+		drivers = append(drivers, d)
+	}
+	e.drvMu.Unlock()
+	for _, d := range drivers {
+		if c, ok := d.(driver.Closer); ok {
+			_ = c.Close()
+		}
+	}
 	return errors.Join(errs...)
 }
 

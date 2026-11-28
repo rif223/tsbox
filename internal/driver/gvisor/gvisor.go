@@ -183,6 +183,13 @@ type box struct {
 	oomBase int // oom_kill of the parent cgroup at the start (Err)
 }
 
+// Close removes the cgroup parent of this state directory once it is empty (driver.Closer). Without it,
+// every engine with a state directory of its own (tests) left an empty /sys/fs/cgroup/tsbox/<hash>.
+func (d *Driver) Close() error {
+	cgroup.RemoveParent(d.cfg.CgroupParent)
+	return nil
+}
+
 func (d *Driver) Start(ctx context.Context, spec driver.Spec) (driver.Box, error) {
 	if err := spec.Validate(); err != nil {
 		return nil, err

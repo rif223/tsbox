@@ -124,6 +124,11 @@ type Box interface {
 	Close() error
 }
 
+// Closer is an optional interface of drivers: the engine calls Close when it closes, after all boxes ended.
+type Closer interface {
+	Close() error
+}
+
 // Driver starts boxes of one isolation technology.
 type Driver interface {
 	Name() string

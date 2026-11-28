@@ -2,9 +2,12 @@ package tsbox
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/rif223/tsbox/internal/driver/cgroup"
 )
 
 // Two engines with different state directories (system daemon next to tests or an embedding application)
@@ -45,5 +48,14 @@ func TestTwoEnginesSameBoxName(t *testing.T) {
 	time.Sleep(time.Second)
 	if st := a.Status(); st.State != BoxRunning {
 		t.Fatalf("killing the box of the other engine ended this one: %s (%s)", st.State, st.Error)
+	}
+	// Closing an engine removes its (then empty) cgroup parent.
+	_ = b.Stop(context.Background(), time.Second)
+	parent := filepath.Join(cgroup.Root, cgroup.InstanceParent(filepath.Join(eb.cfg.stateDir, driverName())))
+	if err := eb.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(parent); !os.IsNotExist(err) {
+		t.Fatalf("cgroup parent %s stays after Close: %v", parent, err)
 	}
 }

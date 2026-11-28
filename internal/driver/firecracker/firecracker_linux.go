@@ -399,6 +399,12 @@ type box struct {
 	stRd *bufio.Reader
 }
 
+// Close removes the cgroup parent of this state directory once it is empty (driver.Closer).
+func (d *Driver) Close() error {
+	cgroup.RemoveParent(d.cfg.CgroupParent)
+	return nil
+}
+
 func (d *Driver) Start(ctx context.Context, spec driver.Spec) (driver.Box, error) {
 	if err := spec.Validate(); err != nil {
 		return nil, err

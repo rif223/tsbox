@@ -30,6 +30,14 @@ func InstanceParent(stateDir string) string {
 	return "/tsbox/" + hex.EncodeToString(sum[:4])
 }
 
+// RemoveParent removes the parent (relative to Root) if it is empty; a parent with box cgroups stays.
+func RemoveParent(parent string) {
+	if strings.Trim(filepath.ToSlash(parent), "/") == "" {
+		return
+	}
+	_ = os.Remove(filepath.Join(Root, parent)) // rmdir: fails while children exist
+}
+
 // EnsureParent creates the parent (relative to Root, e.g. /tsbox/1a2b3c4d) and enables the cpu, memory and
 // pids controllers for the children of Root and of every directory down to it.
 func EnsureParent(parent string) error {
