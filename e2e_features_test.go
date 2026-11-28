@@ -234,3 +234,31 @@ func TestUpdateQuota(t *testing.T) {
 		t.Fatal("the engine replaced the box although the update was refused")
 	}
 }
+
+// Concurrent Creates of one tenant cannot both take its last box.
+func TestTenantQuotaConcurrentCreate(t *testing.T) {
+	e, _ := newEngine(t, WithTenantQuotas("tenant", func(string) Quota { return Quota{Boxes: 1} }))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	const n = 8
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		spec := one(t, "scripts/service.ts", func(s *BoxSpec) { s.Labels = map[string]string{"tenant": "a"} })
+		go func() {
+			_, err := e.Create(ctx, spec)
+			errs <- err
+		}()
+	}
+	ok := 0
+	for i := 0; i < n; i++ {
+		switch err := <-errs; {
+		case err == nil:
+			ok++
+		case !errors.Is(err, ErrQuotaExceeded):
+			t.Fatal(err)
+		}
+	}
+	if ok != 1 {
+		t.Fatalf("%d of %d concurrent creates succeeded with a quota of 1 box", ok, n)
+	}
+}

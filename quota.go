@@ -138,17 +138,8 @@ func (e *Engine) checkQuota(spec BoxSpec, resources bool) error {
 	}
 	if !resources {
 		e.mu.Lock()
-		n := 1
-		for name, b := range e.boxes {
-			if name != spec.Name && b.spec.Labels[e.cfg.quotaLabel] == tenant {
-				n++
-			}
-		}
-		e.mu.Unlock()
-		if n > q.Boxes {
-			return fmt.Errorf("%w: tenant %q may have %d boxes", ErrQuotaExceeded, tenant, q.Boxes)
-		}
-		return nil
+		defer e.mu.Unlock()
+		return e.boxQuotaLocked(spec)
 	}
 	ns, err := normalize(spec)
 	if err != nil {
@@ -178,6 +169,32 @@ func (e *Engine) checkQuota(spec BoxSpec, resources bool) error {
 		return fmt.Errorf("%w: tenant %q: running boxes would use %g of %g CPU cores", ErrQuotaExceeded, tenant, sum.CPU, q.CPU)
 	case q.PIDs > 0 && sum.PIDs > q.PIDs:
 		return fmt.Errorf("%w: tenant %q: running boxes would use %d of %d PIDs", ErrQuotaExceeded, tenant, sum.PIDs, q.PIDs)
+	}
+	return nil
+}
+
+// boxQuotaLocked checks the number of boxes of spec's tenant (e.mu held, so that Create counts and adds the
+// box in one step). The box with the same name does not count.
+func (e *Engine) boxQuotaLocked(spec BoxSpec) error {
+	if e.cfg.quotaFn == nil {
+		return nil
+	}
+	tenant := spec.Labels[e.cfg.quotaLabel]
+	if tenant == "" {
+		return nil
+	}
+	q := e.cfg.quotaFn(tenant)
+	if q.Boxes == 0 {
+		return nil
+	}
+	n := 1
+	for name, b := range e.boxes {
+		if name != spec.Name && b.spec.Labels[e.cfg.quotaLabel] == tenant {
+			n++
+		}
+	}
+	if n > q.Boxes {
+		return fmt.Errorf("%w: tenant %q may have %d boxes", ErrQuotaExceeded, tenant, q.Boxes)
 	}
 	return nil
 }

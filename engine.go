@@ -457,13 +457,14 @@ func (e *Engine) Create(ctx context.Context, spec BoxSpec) (*Box, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := e.checkQuota(spec, false); err != nil {
-		return nil, err
-	}
 	e.mu.Lock()
 	if old, ok := e.boxes[spec.Name]; ok && !old.terminal() {
 		e.mu.Unlock()
 		return nil, fmt.Errorf("box %q already exists", spec.Name)
+	}
+	if err := e.boxQuotaLocked(spec); err != nil { // under e.mu: two Creates cannot both take the last slot
+		e.mu.Unlock()
+		return nil, err
 	}
 	b := newBox(e, spec, drv)
 	b.sdks, b.imports = active, imports
