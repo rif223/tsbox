@@ -176,6 +176,8 @@ type Engine struct {
 	ext       map[string]*extproc.Provider
 	cacheMu   sync.Mutex // build cache of the build sandbox
 	base      baselines  // RSS baseline of an empty Deno per rootfs (gVisor), see baseline.go
+	phMu      sync.Mutex
+	phCache   map[string]profileHashEntry // rootfs directory → fingerprint (profileHash)
 	tcMu      sync.Mutex
 	toolchain map[string]string // Deno binary (path, size, mtime) → version
 
@@ -725,8 +727,44 @@ func (e *Engine) profileRootFS(drv driver.Driver, name string) (string, string, 
 	if err != nil {
 		return "", "", err
 	}
-	h, _, err := profile.Hash(dir)
+	h, err := e.profileHash(dir)
 	return dir, h, err
+}
+
+// profileHashTTL: how long a rootfs fingerprint is reused. Walking a rootfs (about 7000 entries) took about
+// 50 ms of a gVisor start of about 250 ms. The fingerprint is shown in the status and keys the RSS baseline;
+// a change of the rootfs shows within a minute, at once if the directory itself changed (replaced rootfs).
+const profileHashTTL = time.Minute
+
+type profileHashEntry struct {
+	hash  string
+	mtime time.Time
+	at    time.Time
+}
+
+// profileHash returns profile.Hash(dir), reused for profileHashTTL while the directory's mtime is unchanged.
+func (e *Engine) profileHash(dir string) (string, error) {
+	st, err := os.Stat(dir)
+	if err != nil {
+		return "", err
+	}
+	e.phMu.Lock()
+	c, ok := e.phCache[dir]
+	e.phMu.Unlock()
+	if ok && time.Since(c.at) < profileHashTTL && c.mtime.Equal(st.ModTime()) {
+		return c.hash, nil
+	}
+	h, _, err := profile.Hash(dir)
+	if err != nil {
+		return "", err
+	}
+	e.phMu.Lock()
+	if e.phCache == nil {
+		e.phCache = map[string]profileHashEntry{}
+	}
+	e.phCache[dir] = profileHashEntry{hash: h, mtime: st.ModTime(), at: time.Now()}
+	e.phMu.Unlock()
+	return h, nil
 }
 
 // checkProfile checks the profile before the build (without fingerprint).
