@@ -38,6 +38,8 @@ const ProtoVersion = 1
 const (
 	handshakeTimeout = 15 * time.Second
 	restartDelay     = 2 * time.Second
+	// DefaultIdleTimeout ends a process without sessions; the next Open starts it again.
+	DefaultIdleTimeout = time.Minute
 )
 
 // Config of an external provider.
@@ -48,6 +50,10 @@ type Config struct {
 	Deno          string            // the host's Deno
 	Settings      map[string]string // resolved operator configuration (including secrets)
 	Logger        *slog.Logger
+	// IdleTimeout ends the process when no session was open for this long (0 = DefaultIdleTimeout, < 0 =
+	// never). Every configuration variant (e.g. a secret per tenant) has a process of its own; without the
+	// timeout they all lived until the engine closed.
+	IdleTimeout time.Duration
 }
 
 // Provider starts the process on demand and multiplexes sessions over it.
@@ -57,12 +63,17 @@ type Provider struct {
 	mu        sync.Mutex
 	proc      *proc
 	lastStart time.Time
+	lastUse   time.Time   // last ensure (an Open between ensure and its session must not lose the process)
+	idle      *time.Timer // armed while the process has no session
 	nextSID   atomic.Uint64
 }
 
 func New(cfg Config) *Provider {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
+	}
+	if cfg.IdleTimeout == 0 {
+		cfg.IdleTimeout = DefaultIdleTimeout
 	}
 	return &Provider{cfg: cfg}
 }
@@ -103,6 +114,11 @@ func (p *Provider) command() (*exec.Cmd, error) {
 func (p *Provider) ensure(ctx context.Context) (*proc, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.lastUse = time.Now()
+	if p.idle != nil {
+		p.idle.Stop()
+		p.idle = nil
+	}
 	if p.proc != nil {
 		select {
 		case <-p.proc.done:
@@ -268,29 +284,82 @@ func (p *Provider) Open(ctx context.Context, s sdk.Session) (sdk.Handler, error)
 		grants = sdk.Grants{} // always an object for the provider, never null
 	}
 	open := map[string]any{"box": s.Box(), "script": s.Script(), "grants": grants}
+	failOpen := func(err error) (sdk.Handler, error) { // the session never opened: forget it
+		pr.mu.Lock()
+		delete(pr.sess, sid)
+		delete(pr.opens, sid)
+		pr.mu.Unlock()
+		p.sessionClosed(pr)
+		return nil, err
+	}
 	if err := pr.send(&proto.Frame{T: proto.TOpen, SID: sid, P: proto.Raw(open)}); err != nil {
-		return nil, sdk.Errorf(sdk.Unavailable, "provider not reachable")
+		return failOpen(sdk.Errorf(sdk.Unavailable, "provider not reachable"))
 	}
 	select {
 	case f, ok := <-ch:
 		if !ok {
-			return nil, sdk.Errorf(sdk.Unavailable, "provider ended")
+			return failOpen(sdk.Errorf(sdk.Unavailable, "provider ended"))
 		}
 		if f.Err != nil {
-			pr.mu.Lock()
-			delete(pr.sess, sid)
-			pr.mu.Unlock()
-			return nil, &sdk.Error{Code: f.Err.Code, Msg: f.Err.Msg}
+			return failOpen(&sdk.Error{Code: f.Err.Code, Msg: f.Err.Msg})
 		}
 	case <-time.After(handshakeTimeout):
-		return nil, sdk.Errorf(sdk.Unavailable, "provider does not answer open")
+		return failOpen(sdk.Errorf(sdk.Unavailable, "provider does not answer open"))
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return failOpen(ctx.Err())
 	}
-	return &handler{pr: pr, sid: sid}, nil
+	return &handler{p: p, pr: pr, sid: sid}, nil
+}
+
+// sessionClosed arms the idle timer once the process pr has no session left.
+func (p *Provider) sessionClosed(pr *proc) {
+	if p.cfg.IdleTimeout < 0 {
+		return
+	}
+	pr.mu.Lock()
+	n := len(pr.sess)
+	pr.mu.Unlock()
+	if n > 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.proc != pr {
+		return
+	}
+	if p.idle != nil {
+		p.idle.Stop()
+	}
+	p.idle = time.AfterFunc(p.cfg.IdleTimeout, func() { p.idleCheck(pr) })
+}
+
+// idleCheck ends pr if it is still without a session and nobody used the provider in the meantime.
+func (p *Provider) idleCheck(pr *proc) {
+	p.mu.Lock()
+	if p.proc != pr {
+		p.mu.Unlock()
+		return
+	}
+	pr.mu.Lock()
+	n := len(pr.sess)
+	pr.mu.Unlock()
+	if n > 0 {
+		p.mu.Unlock()
+		return
+	}
+	if wait := p.cfg.IdleTimeout - time.Since(p.lastUse); wait > 0 {
+		p.idle = time.AfterFunc(wait, func() { p.idleCheck(pr) })
+		p.mu.Unlock()
+		return
+	}
+	p.proc, p.idle = nil, nil
+	p.mu.Unlock()
+	p.cfg.Logger.Debug("provider idle, ending", "sdk", p.cfg.Name)
+	pr.shutdown()
 }
 
 type handler struct {
+	p   *Provider
 	pr  *proc
 	sid string
 }
@@ -332,8 +401,13 @@ func (h *handler) Call(ctx context.Context, method string, params json.RawMessag
 
 func (h *handler) Close() error {
 	h.pr.mu.Lock()
+	_, open := h.pr.sess[h.sid]
 	delete(h.pr.sess, h.sid)
 	h.pr.mu.Unlock()
+	if !open { // closed before (Close is called more than once on some paths)
+		return nil
+	}
+	defer h.p.sessionClosed(h.pr)
 	select {
 	case <-h.pr.done:
 		return nil
@@ -347,17 +421,25 @@ func (p *Provider) Close() error {
 	p.mu.Lock()
 	pr := p.proc
 	p.proc = nil
-	p.mu.Unlock()
-	if pr == nil {
-		return nil
+	if p.idle != nil {
+		p.idle.Stop()
+		p.idle = nil
 	}
+	p.mu.Unlock()
+	if pr != nil {
+		pr.shutdown()
+	}
+	return nil
+}
+
+// shutdown closes stdin (the provider ends by itself) and kills the process after 3 s.
+func (pr *proc) shutdown() {
 	_ = pr.w.Close()
 	select {
 	case <-pr.done:
 	case <-time.After(3 * time.Second):
 		_ = pr.cmd.Process.Kill()
 	}
-	return nil
 }
 
 type logWriter struct {

@@ -60,3 +60,53 @@ func TestEcho(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestIdle: the process ends after IdleTimeout without a session and starts again on the next Open; an open
+// session keeps it.
+func TestIdle(t *testing.T) {
+	deno, err := denobin.Find()
+	if err != nil {
+		t.Skip(err)
+	}
+	s, err := sdkreg.New(t.TempDir()).Resolve("echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const idle = 300 * time.Millisecond
+	p := New(Config{Name: "echo", Version: "0.1.0", Dir: s.Dir, Exec: s.Manifest.Provider.Exec, Deno: deno, IdleTimeout: idle})
+	defer p.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	current := func() *proc {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.proc
+	}
+	h, err := p.Open(ctx, &sdktest.Session{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := current()
+	time.Sleep(3 * idle)
+	if current() != pr {
+		t.Fatal("the process ended although a session is open")
+	}
+	_ = h.Close()
+	_ = h.Close() // twice: no second close frame, no second timer
+	select {
+	case <-pr.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the process did not end after the idle timeout")
+	}
+	if current() != nil {
+		t.Fatal("provider still refers to the ended process")
+	}
+	time.Sleep(restartDelay)
+	h2, err := p.Open(ctx, &sdktest.Session{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h2.Call(ctx, "echo", json.RawMessage(`{"text":"again"}`)); err != nil {
+		t.Fatal(err)
+	}
+}
