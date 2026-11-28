@@ -42,6 +42,10 @@ versions are the tags `v<version>` (see CONTRIBUTING.md, Releases).
 - **gVisor start ~1 s faster:** init measures the RSS baseline of an empty Deno only at the first start of a
   rootfs and init binary; later starts get the remembered value (`<state>/baseline-rss.json`). Until init
   ready: 1.3 s → 0.26 s; one script ready: 1.67 s → 0.62 s.
+- **Less work per start:** the rootfs fingerprint is reused for a minute while the rootfs directory is
+  unchanged, and the hash of the tsbox binary is cached by size and mtime (together 70–120 ms per gVisor start).
+- **Old binaries are cleaned up:** gVisor removes init copies of older tsbox binaries (12 MiB each, kept for ever
+  before); Firecracker removes rootfs images of older binaries at once (about 470 MB each, kept for 7 days before).
 - **External SDK providers** end one minute after their last session (`extproc.Config.IdleTimeout`) instead of
   running until the engine closes; the next use starts them again.
 
