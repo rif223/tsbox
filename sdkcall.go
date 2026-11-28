@@ -331,7 +331,7 @@ func (b *Box) execCall(s *script, run *scriptRun, ss *session, m *manifest.Metho
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				b.e.cfg.logger.Error("Provider-Panik", "sdk", ss.a.m.Name, "panic", r, "stack", string(debug.Stack()))
+				b.e.cfg.logger.Error("provider panic", "sdk", ss.a.m.Name, "panic", r, "stack", string(debug.Stack()))
 				perr = &proto.Error{Code: sdk.Internal, Msg: "internal error"}
 			}
 		}()
@@ -383,7 +383,7 @@ func toProtoError(b *Box, ss *session, err error) *proto.Error {
 		return &proto.Error{Code: se.Code, Msg: trunc(se.Msg, 512)}
 	}
 	if errors.Is(err, context.Canceled) {
-		return &proto.Error{Code: sdk.Unavailable, Msg: "abgebrochen"}
+		return &proto.Error{Code: sdk.Unavailable, Msg: "canceled"}
 	}
 	b.e.cfg.logger.Warn("SDK error", "sdk", ss.a.m.Name, "box", b.spec.Name, "script", ss.s.spec.Name, "err", err)
 	return &proto.Error{Code: sdk.Internal, Msg: "internal error"}
