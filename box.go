@@ -312,7 +312,11 @@ func (b *Box) Start(ctx context.Context) error {
 	}
 	b.state, b.errMsg, b.stopping, b.hung, b.viol, b.oomSeen = BoxStarting, "", false, false, 0, 0
 	b.gen++
-	b.finished = make(chan struct{})
+	select { // a new channel only after the last run ended: whoever waits before the first Start keeps theirs
+	case <-b.finished:
+		b.finished = make(chan struct{})
+	default:
+	}
 	for _, s := range b.scripts {
 		s.state, s.failures = ScriptPending, nil
 	}

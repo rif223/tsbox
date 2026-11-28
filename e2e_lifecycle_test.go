@@ -47,3 +47,27 @@ func TestStopDuringStart(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Wait on a box that is created but not started yet returns when the box ends after Start (before, it
+// waited on a channel that Start replaced and never closed).
+func TestWaitBeforeStart(t *testing.T) {
+	e, _ := newEngine(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	b, err := e.Create(ctx, one(t, "../examples/hello.ts", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Wait(ctx)
+		done <- err
+	}()
+	time.Sleep(100 * time.Millisecond) // Wait has taken the channel
+	if err := b.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("Wait before Start: %v (box %s)", err, b.Status().State)
+	}
+}
