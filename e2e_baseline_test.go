@@ -2,15 +2,37 @@ package tsbox
 
 import (
 	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
+
+// ownStateDir is a state directory of its own for a second engine. Call it before newEngine: the cleanup
+// then runs after the engine closed. runsc leaves <state>/gvisor/runsc/null-netns mounted (see TestMain).
+func ownStateDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "tsbox-e2e-own-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(dir, "state")
+	t.Cleanup(func() {
+		if runtime.GOOS == "linux" {
+			_ = exec.Command("umount", "-l", filepath.Join(state, "gvisor", "runsc", "null-netns")).Run()
+		}
+		removeTemp(dir)
+	})
+	return state
+}
 
 // Under gVisor init measures the RSS of an empty Deno once; later starts of the same rootfs get the value
 // passed (about a second faster) and still report the scripts' own RSS, not the mapped Deno binary.
 func TestBaselineRSSReused(t *testing.T) {
 	needGVisor(t)
-	e, _ := newEngine(t, WithStateDir(t.TempDir())) // own state: the first start measures
+	e, _ := newEngine(t, WithStateDir(ownStateDir(t))) // own state: the first start measures
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	start := func() (*Box, time.Duration) {

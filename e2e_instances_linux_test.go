@@ -2,8 +2,6 @@ package tsbox
 
 import (
 	"context"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,16 +12,8 @@ import (
 // not end the other.
 func TestTwoEnginesSameBoxName(t *testing.T) {
 	needIsolation(t)
-	dir, err := os.MkdirTemp("", "tsbox-e2e-second-")
-	if err != nil {
-		t.Fatal(err)
-	}
 	ea, _ := newEngine(t)
-	eb, _ := newEngine(t, WithStateDir(filepath.Join(dir, "state")))
-	t.Cleanup(func() { // after the engines closed (cleanups run in reverse order)
-		_ = exec.Command("umount", "-l", filepath.Join(dir, "state", "gvisor", "runsc", "null-netns")).Run()
-		removeTemp(dir)
-	})
+	eb, _ := newEngine(t, WithStateDir(ownStateDir(t)))
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	name := boxFor(t)
