@@ -142,7 +142,7 @@ func TestBuildSandbox(t *testing.T) {
 	needIsolation(t)
 	e, _ := newEngine(t)
 	if _, err := e.Check(context.Background(), sdkBox(t, "sdk/outside.ts")); err == nil ||
-		!strings.Contains(err.Error(), "lib_outside") {
+		!strings.Contains(err.Error(), "lib_outside") || !strings.Contains(err.Error(), "outside the script's directory") {
 		t.Fatalf("import outside the context built: %v", err)
 	}
 	for _, entry := range []string{"sdk/kv.ts", "../examples/hello.ts"} {
