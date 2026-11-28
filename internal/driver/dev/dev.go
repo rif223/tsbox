@@ -59,19 +59,26 @@ func (d *Driver) Start(ctx context.Context, spec driver.Spec) (driver.Box, error
 	plat, err := attach(cmd, spec.Limits)
 	if err != nil {
 		_ = cmd.Process.Kill()
-		go p.Wait(nil)
+		go waitAndRelease(p)
 		return nil, fmt.Errorf("dev: setting limits: %w", err)
 	}
 	// Before the first start frame: init starts scripts only after hello, they inherit the value.
 	if err := setOOMScoreAdj(cmd.Process.Pid, spec.OOMScoreAdj); err != nil {
 		_ = plat.kill(cmd)
-		go p.Wait(nil)
+		go waitAndRelease(p)
 		return nil, fmt.Errorf("dev: oom_score_adj: %w", err)
 	}
 	b.plat = plat
 	go p.Wait(b.exitErr)
 	go b.watchMemory(d.watch)
 	return b, nil
+}
+
+// waitAndRelease reaps a process whose start failed and closes the read end of its stdout pipe: nobody gets
+// the box, so nobody calls Close, which would release it otherwise (one FD per failed start).
+func waitAndRelease(p *driver.Process) {
+	p.Wait(nil)
+	p.Release()
 }
 
 func (b *box) exitErr(err error) error {
