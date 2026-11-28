@@ -74,6 +74,9 @@ type Spec struct {
 	// OOMScoreAdj applies to all host processes of the box (gvisor: all runsc processes; dev on Linux: init
 	// and scripts) so that the kernel ends boxes first when the host runs out of memory. 0 = unchanged.
 	OOMScoreAdj int
+	// BaselineRSS is the VmRSS of an empty Deno that init reported in the hello of an earlier start with the same
+	// rootfs and init (gvisor only; 0 = init measures it, which takes about a second).
+	BaselineRSS int64
 }
 
 func (s Spec) Validate() error {

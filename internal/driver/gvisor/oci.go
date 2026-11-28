@@ -1,6 +1,8 @@
 package gvisor
 
 import (
+	"strconv"
+
 	"github.com/rif223/tsbox/internal/driver"
 )
 
@@ -34,7 +36,7 @@ func ociSpec(cfg Config, s driver.Spec, initDir string) map[string]any {
 		"process": map[string]any{
 			"terminal": false,
 			"user":     map[string]any{"uid": 0, "gid": 0},
-			"args":     []string{dirInit + "/tsbox", "__init", "--deno", sandboxDeno, "--uid-mode"},
+			"args":     initArgs(s),
 			"env":      []string{"NO_COLOR=1"},
 			"cwd":      "/",
 			"capabilities": map[string]any{
@@ -63,4 +65,13 @@ func ociSpec(cfg Config, s driver.Spec, initDir string) map[string]any {
 			},
 		},
 	}
+}
+
+// initArgs is the command line of init in the sandbox.
+func initArgs(s driver.Spec) []string {
+	args := []string{dirInit + "/tsbox", "__init", "--deno", sandboxDeno, "--uid-mode"}
+	if s.BaselineRSS > 0 {
+		args = append(args, "--baseline-rss", strconv.FormatInt(s.BaselineRSS, 10))
+	}
+	return args
 }

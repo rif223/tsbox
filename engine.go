@@ -175,6 +175,7 @@ type Engine struct {
 	extMu     sync.Mutex
 	ext       map[string]*extproc.Provider
 	cacheMu   sync.Mutex // build cache of the build sandbox
+	base      baselines  // RSS baseline of an empty Deno per rootfs (gVisor), see baseline.go
 	tcMu      sync.Mutex
 	toolchain map[string]string // Deno binary (path, size, mtime) → version
 

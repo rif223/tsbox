@@ -331,10 +331,11 @@ func (b *Box) Start(ctx context.Context) error {
 	b.mu.Lock()
 	b.profileHash = phash
 	b.mu.Unlock()
+	baseKey := b.e.baselineKey(b.driver.Name(), phash)
 	drv, err := b.driver.Start(ctx, driver.Spec{
 		ID: b.spec.Name, Limits: driver.Limits{MemoryBytes: b.spec.Limits.Memory, CPUCores: cpu, PIDs: b.spec.Limits.PIDs},
 		ArtifactsDir: filepath.Join(b.dir(), "artifacts"), Init: b.e.cfg.init, Deno: b.e.cfg.deno,
-		Stderr: &initLog{b: b}, RootFS: rootfs, OOMScoreAdj: b.e.cfg.oomAdj,
+		Stderr: &initLog{b: b}, RootFS: rootfs, OOMScoreAdj: b.e.cfg.oomAdj, BaselineRSS: b.e.baselineRSS(baseKey),
 	})
 	if err != nil {
 		b.fail(BoxFailed, err.Error())
@@ -349,7 +350,7 @@ func (b *Box) Start(ctx context.Context) error {
 	go b.writer(drv.Stdin(), b.out)
 
 	hello := make(chan error, 1)
-	go b.readLoop(drv, gen, hello)
+	go b.readLoop(drv, gen, hello, baseKey)
 	select {
 	case err = <-hello:
 	case <-time.After(helloTimeout):
@@ -446,7 +447,7 @@ func (b *Box) startScriptLocked(s *script) {
 	b.e.emit(Event{At: time.Now(), Kind: EventScriptStarted, Box: b.spec.Name, Script: s.spec.Name})
 }
 
-func (b *Box) readLoop(drv driver.Box, gen int, hello chan<- error) {
+func (b *Box) readLoop(drv driver.Box, gen int, hello chan<- error, baseKey string) {
 	r := bufio.NewReaderSize(drv.Stdout(), 64<<10)
 	first := true
 	for {
@@ -466,6 +467,7 @@ func (b *Box) readLoop(drv driver.Box, gen int, hello chan<- error) {
 				hello <- fmt.Errorf("invalid hello from tsbox-init (%s)", f.T)
 				break
 			}
+			b.e.rememberBaselineRSS(baseKey, h.BaselineRSS)
 			hello <- nil
 			continue
 		}

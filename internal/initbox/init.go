@@ -59,6 +59,7 @@ func Main(args []string) int {
 	fs := flag.NewFlagSet("__init", flag.ContinueOnError)
 	deno := fs.String("deno", "/usr/local/bin/deno", "Deno in the box")
 	uidMode := fs.Bool("uid-mode", false, "start every script with its own UID (needs SETUID/SETGID/KILL)")
+	baseline := fs.Int64("baseline-rss", 0, "VmRSS of an empty Deno measured by an earlier start (0 = measure now)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -69,7 +70,11 @@ func Main(args []string) int {
 	}
 	s := &initState{deno: *deno, uidMode: *uidMode, self: self, out: &hostWriter{w: os.Stdout}, procs: map[string]*scriptProc{}}
 	if s.uidMode && !hasRssAnon() {
-		s.baseline = s.calibrate()
+		// Measuring costs about a second before hello; the host passes the value of an earlier start of the same
+		// rootfs and init (Engine.baselineRSS).
+		if s.baseline = *baseline; s.baseline <= 0 {
+			s.baseline = s.calibrate()
+		}
 	}
 	s.out.send(&proto.Frame{T: proto.THello, P: proto.Raw(proto.Hello{
 		Proto: proto.Version, Init: Version, UIDMode: s.uidMode, BaselineRSS: s.baseline,
