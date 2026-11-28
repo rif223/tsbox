@@ -37,7 +37,8 @@ versions are the tags `v<version>` (see CONTRIBUTING.md, Releases).
 ### Changed
 
 - **Box cgroups per engine:** gVisor and Firecracker put boxes below `/sys/fs/cgroup/tsbox/<8 hex digits of the
-  state directory>/<box>` instead of `/sys/fs/cgroup/tsbox/<box>`.
+  state directory>/<box>` instead of `/sys/fs/cgroup/tsbox/<box>`; `Engine.Close` removes the parent once it is
+  empty.
 - **gVisor start ~1 s faster:** init measures the RSS baseline of an empty Deno only at the first start of a
   rootfs and init binary; later starts get the remembered value (`<state>/baseline-rss.json`). Until init
   ready: 1.3 s → 0.26 s; one script ready: 1.67 s → 0.62 s.
