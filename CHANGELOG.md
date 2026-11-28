@@ -64,6 +64,19 @@ versions are the tags `v<version>` (see CONTRIBUTING.md, Releases).
 - kv: no fsync before replacing the file; a damaged file made the namespace unusable.
 - An external provider got two `close` frames for one session on some paths; a session whose open timed out
   stayed registered.
+- `Box.Wait` called between `Create` and `Start` never returned.
+- Script params were not checked: above ~32 KiB (Windows) or 128 KiB (Linux) the start failed with `spawn_failed`,
+  above 1 MiB the script stayed `starting` for ever. Params must now be valid JSON of at most 64 KiB
+  (`MaxParams`; 8 KiB with the dev driver on Windows, `MaxParamsWindows`).
+- Log lines over the rate limit (20/s, burst 100 per script) vanished without a trace. They are now counted
+  (`ScriptStatus.DroppedLogLines`, metric `tsbox_script_log_lines_dropped_total`) and reported by a line
+  "tsbox: N log lines dropped".
+- SDK rate limits started with a full burst at every script restart (`--restart always` doubled the allowed
+  rate); the buckets now belong to the script.
+- The watchdog measured the box while holding its lock (under Firecracker a vsock round trip of up to 3 s that
+  blocked the box's API); the OOM check at a killed script is bounded to 1 s.
+- Build sandbox: an import outside the script's directory failed with "Type error in the script"; it now gets
+  its own hint. SECURITY.md names what a build reads as a known limit.
 - http: the SSRF check missed several special-purpose ranges (0.0.0.0/8, 198.18.0.0/15, 240.0.0.0/4, documentation
   ranges, Teredo, local-use NAT64, …) and NAT64/6to4 addresses that embed a private IPv4 address
   (`64:ff9b::7f00:1` = 127.0.0.1).
