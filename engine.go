@@ -260,7 +260,7 @@ func New(ctx context.Context, opts ...Option) (*Engine, error) {
 	e := &Engine{cfg: cfg, drivers: map[string]driver.Driver{}, drvErr: map[string]driverErr{}, boxes: map[string]*Box{}, reg: sdkreg.New(cfg.stateDir, cfg.sdkDirs...),
 		ext: map[string]*extproc.Provider{}, providers: map[string]sdk.Provider{
 			"log":  logprov.Provider{},
-			"kv":   kvprov.New(filepath.Join(cfg.stateDir, "kv")),
+			"kv":   kvProvider(cfg),
 			"http": httpp.Provider{},
 		}}
 	e.providers["inbox"] = inboxProvider{e}
