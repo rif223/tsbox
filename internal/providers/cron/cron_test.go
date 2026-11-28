@@ -101,3 +101,25 @@ func TestProviderTicks(t *testing.T) {
 		t.Fatal("ticks after Close")
 	}
 }
+
+// FuzzParse: no expression crashes Parse; a parsed schedule's Next is later than t or zero (none found).
+func FuzzParse(f *testing.F) {
+	for _, s := range []string{"* * * * *", "*/15 9-17 * * mon-fri", "0 0 30 2 *", "@every 1s", "@daily",
+		"5/10 1,2,3 1-31/2 jan-dec 0-7", "61 * * * *", "@every -1s", "*/0 * * * *"} {
+		f.Add(s)
+	}
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		berlin = time.UTC
+	}
+	t0 := time.Date(2026, 3, 29, 1, 59, 30, 0, berlin) // just before a DST switch
+	f.Fuzz(func(t *testing.T, expr string) {
+		s, err := Parse(expr)
+		if err != nil {
+			return
+		}
+		if n := s.Next(t0); !n.IsZero() && !n.After(t0) {
+			t.Fatalf("%q: Next(%v) = %v", expr, t0, n)
+		}
+	})
+}

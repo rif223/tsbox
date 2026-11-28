@@ -1,6 +1,9 @@
 package tsbox
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestParseQuota(t *testing.T) {
 	q, err := ParseQuota("boxes=10, memory=2Gi,cpu=1.5,pids=512")
@@ -15,4 +18,20 @@ func TestParseQuota(t *testing.T) {
 			t.Errorf("%q accepted", bad)
 		}
 	}
+}
+
+// FuzzParseQuota: no input crashes ParseQuota; an accepted quota has no negative or non-finite value.
+func FuzzParseQuota(f *testing.F) {
+	for _, s := range []string{"boxes=10,memory=2Gi,cpu=4,pids=1024", "", "cpu=NaN", "memory=-1", "=,=", "boxes=1e9"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		q, err := ParseQuota(s)
+		if err != nil {
+			return
+		}
+		if q.Boxes < 0 || q.Memory < 0 || q.PIDs < 0 || !(q.CPU >= 0) || math.IsInf(q.CPU, 0) {
+			t.Fatalf("%q: %+v", s, q)
+		}
+	})
 }
