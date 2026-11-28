@@ -1,9 +1,11 @@
 package kvstore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,9 +16,13 @@ import (
 	"github.com/rif223/tsbox/internal/fsutil"
 )
 
-// FileStore keeps every namespace in memory and as a JSON file <root>/<storage>/v2/<script>.json, replaced
-// atomically after every change. It suits the bundled quota (1 MiB per script); larger data belongs in a
-// database-backed Store.
+// FileStore keeps every namespace in memory and on disk below <root>/<storage>/v2/: a snapshot
+// <script>.json and a journal <script>.log with one JSON line per change, synced before the change counts.
+// When the journal outgrows the snapshot (and at least minCompact), the snapshot is rewritten (atomically,
+// synced) and the journal starts empty; a write costs one line instead of the whole namespace. Loading
+// replays the journal over the snapshot; a line cut off by a crash ends the replay. A damaged snapshot is
+// moved aside (<script>.json.damaged-<unix time>) instead of blocking the namespace for good. It suits the
+// bundled quota (1 MiB per script); larger data belongs in a database-backed Store.
 //
 // Files of tsbox ≤ 0.3 (<root>/<storage>/<script>.json, a plain key → value object) are migrated on first
 // access and then removed.
@@ -39,9 +45,14 @@ type fileNS struct {
 	loaded       bool
 	seq          uint64
 	data         map[string]*Entry
+	journalSize  int64 // bytes in the journal
+	snapSize     int64 // bytes of the last snapshot
 }
 
-// fileFormat is the content of a v2 file.
+// minCompact is the journal size below which the snapshot is not rewritten.
+const minCompact = 64 << 10
+
+// fileFormat is the content of a v2 snapshot.
 type fileFormat struct {
 	Seq     uint64               `json:"seq"`
 	Entries map[string]fileEntry `json:"entries"`
@@ -51,6 +62,16 @@ type fileEntry struct {
 	Value   json.RawMessage `json:"value"`
 	Version uint64          `json:"ver"`
 	Expires int64           `json:"exp,omitempty"` // Unix milliseconds
+}
+
+// journalRec is a line of the journal: a set (V, Ver, Exp) or a delete (Del); Seq is the counter afterwards.
+type journalRec struct {
+	K   string          `json:"k"`
+	V   json.RawMessage `json:"v,omitempty"`
+	Ver uint64          `json:"ver,omitempty"`
+	Exp int64           `json:"exp,omitempty"`
+	Del bool            `json:"del,omitempty"`
+	Seq uint64          `json:"seq"`
 }
 
 func (s *FileStore) get(ns Namespace) (*fileNS, error) {
@@ -96,8 +117,7 @@ func (s *FileStore) Update(_ context.Context, ns Namespace, key string, quota in
 	if err := n.load(); err != nil {
 		return nil, err
 	}
-	now := s.now()
-	purged := n.purge(now)
+	n.purge(s.now()) // in memory only: expired entries count as absent when loading as well
 	cur := n.data[key]
 	var arg *Entry
 	if cur != nil {
@@ -106,52 +126,39 @@ func (s *FileStore) Update(_ context.Context, ns Namespace, key string, quota in
 	}
 	next, err := fn(arg)
 	if err != nil {
-		if purged {
-			_ = n.save()
-		}
 		return nil, err
 	}
 	if next == arg {
-		if purged {
-			if err := n.save(); err != nil {
-				return nil, err
-			}
-		}
 		return cur, nil
 	}
 	if next != nil {
 		used := n.used() - Size(key, cur) + Size(key, next)
 		if used > quota {
-			if purged {
-				_ = n.save()
-			}
 			return nil, ErrQuota
 		}
-		stored := &Entry{Value: append(json.RawMessage(nil), next.Value...), Expires: next.Expires}
-		n.seq++
-		stored.Version = n.seq
-		n.data[key] = stored
-		if err := n.save(); err != nil {
-			n.seq--
-			if cur != nil {
-				n.data[key] = cur
-			} else {
-				delete(n.data, key)
-			}
+		stored := &Entry{Value: append(json.RawMessage(nil), next.Value...), Version: n.seq + 1, Expires: next.Expires}
+		rec := journalRec{K: key, V: stored.Value, Ver: stored.Version, Seq: stored.Version}
+		if !stored.Expires.IsZero() {
+			rec.Exp = stored.Expires.UnixMilli()
+		}
+		if err := n.appendJournal(rec); err != nil {
 			return nil, err
 		}
+		n.seq = stored.Version
+		n.data[key] = stored
+		n.maybeCompact()
 		out := *stored
 		return &out, nil
 	}
 	if cur == nil {
 		return nil, nil
 	}
-	delete(n.data, key)
-	n.seq++ // a later re-create gets a new version
-	if err := n.save(); err != nil {
-		n.data[key] = cur
+	if err := n.appendJournal(journalRec{K: key, Del: true, Seq: n.seq + 1}); err != nil {
 		return nil, err
 	}
+	delete(n.data, key)
+	n.seq++ // a later re-create gets a new version
+	n.maybeCompact()
 	return nil, nil
 }
 
@@ -210,9 +217,18 @@ func (n *fileNS) load() error {
 	switch {
 	case err == nil:
 		var f fileFormat
-		if err := json.Unmarshal(b, &f); err != nil {
-			return fmt.Errorf("kvstore: %s damaged: %w", n.path, err)
+		if jerr := json.Unmarshal(b, &f); jerr != nil {
+			// Before, the namespace stayed unusable until someone deleted the file. Keep it for inspection and go
+			// on with the journal (the writes since the last snapshot).
+			aside := fmt.Sprintf("%s.damaged-%d", n.path, time.Now().Unix())
+			if err := fsutil.Rename(n.path, aside); err != nil {
+				return fmt.Errorf("kvstore: %s damaged (%v) and cannot be moved aside: %w", n.path, jerr, err)
+			}
+			slog.Warn("kvstore: damaged snapshot moved aside", "file", n.path, "to", aside, "err", jerr)
+			n.data = map[string]*Entry{}
+			break
 		}
+		n.snapSize = int64(len(b))
 		n.seq = f.Seq
 		for k, e := range f.Entries {
 			en := &Entry{Value: e.Value, Version: e.Version}
@@ -229,8 +245,102 @@ func (n *fileNS) load() error {
 	default:
 		return err
 	}
+	if err := n.replay(); err != nil {
+		return err
+	}
 	n.loaded = true
 	return nil
+}
+
+func (n *fileNS) journalPath() string { return strings.TrimSuffix(n.path, ".json") + ".log" }
+
+// replay applies the journal. Replaying lines that the snapshot already contains (crash between rewriting
+// the snapshot and emptying the journal) gives the same state. A line without its newline or not readable
+// (crash while writing) is cut off together with everything after it.
+func (n *fileNS) replay() error {
+	b, err := os.ReadFile(n.journalPath())
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	good := 0
+	for good < len(b) {
+		i := bytes.IndexByte(b[good:], '\n')
+		if i < 0 {
+			break
+		}
+		var r journalRec
+		if json.Unmarshal(b[good:good+i], &r) != nil || (!r.Del && len(r.V) == 0) {
+			break
+		}
+		if r.Del {
+			delete(n.data, r.K)
+		} else {
+			e := &Entry{Value: r.V, Version: r.Ver}
+			if r.Exp != 0 {
+				e.Expires = time.UnixMilli(r.Exp)
+			}
+			n.data[r.K] = e
+		}
+		n.seq = max(n.seq, r.Seq, r.Ver)
+		good += i + 1
+	}
+	if good < len(b) {
+		slog.Warn("kvstore: incomplete journal line dropped", "file", n.journalPath(), "bytes", len(b)-good)
+		if err := os.Truncate(n.journalPath(), int64(good)); err != nil {
+			return err
+		}
+	}
+	n.journalSize = int64(good)
+	return nil
+}
+
+// appendJournal writes one line and syncs it.
+func (n *fileNS) appendJournal(r journalRec) error {
+	line, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(n.path), 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(n.journalPath(), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(append(line, '\n'))
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		// A partial line would end every later replay before the lines after it: cut it off now.
+		_ = os.Truncate(n.journalPath(), n.journalSize)
+		return err
+	}
+	n.journalSize += int64(len(line)) + 1
+	return nil
+}
+
+// maybeCompact rewrites the snapshot once the journal is larger than it (and at least minCompact). A failure
+// only leaves the journal longer; the data is safe in it.
+func (n *fileNS) maybeCompact() {
+	if n.journalSize < minCompact || n.journalSize < n.snapSize {
+		return
+	}
+	if err := n.save(); err != nil {
+		slog.Warn("kvstore: rewriting the snapshot failed", "file", n.path, "err", err)
+		return
+	}
+	if err := os.Remove(n.journalPath()); err != nil && !os.IsNotExist(err) {
+		slog.Warn("kvstore: emptying the journal failed", "file", n.journalPath(), "err", err)
+		return
+	}
+	n.journalSize = 0
 }
 
 // migrate takes over a file of tsbox ≤ 0.3 (key → value), writes it in the v2 format and removes it.
@@ -265,8 +375,10 @@ func (n *fileNS) migrate() error {
 	return nil
 }
 
+// save writes the snapshot atomically: temporary file, sync, rename, sync of the directory.
 func (n *fileNS) save() error {
-	if err := os.MkdirAll(filepath.Dir(n.path), 0o700); err != nil {
+	dir := filepath.Dir(n.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	f := fileFormat{Seq: n.seq, Entries: make(map[string]fileEntry, len(n.data))}
@@ -282,8 +394,31 @@ func (n *fileNS) save() error {
 		return err
 	}
 	tmp := n.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	if err := writeSynced(tmp, b); err != nil {
 		return err
 	}
-	return fsutil.Rename(tmp, n.path)
+	if err := fsutil.Rename(tmp, n.path); err != nil {
+		return err
+	}
+	if d, err := os.Open(dir); err == nil { // makes the rename durable on Linux; a no-op error on Windows
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	n.snapSize = int64(len(b))
+	return nil
+}
+
+func writeSynced(path string, b []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(b)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
